@@ -1,0 +1,22 @@
+# secrets — never commit these
+.env
+.env.*
+*.keystore
+*.jks
+local.properties
+supabase/.env
+supabase/.temp/
+
+# android
+.gradle/
+build/
+app/build/
+captures/
+.cxx/
+
+# deno / supabase functions
+node_modules/
+
+# os
+Thumbs.db
+.DS_Store
