@@ -158,6 +158,41 @@ class LiveBackendTest {
         }
     }
 
+    /**
+     * The server route, end to end, against a row seeded from the laptop.
+     *
+     * Pass the marker the seeder used:
+     *   -Pandroid.testInstrumentationRunnerArguments.toffeeReminderMark=zz-abc
+     */
+    @Test
+    fun thePollerFindsARealFiredReminder() = runBlocking {
+        val pw = password
+        val mark = InstrumentationRegistry.getArguments().getString("toffeeReminderMark")
+        assumeTrue("no credential or marker; skipping", pw != null && mark != null)
+
+        val s = session()
+        if (s.state() != SessionState.Active) assertTrue(s.signIn(email, pw!!).isSuccess)
+
+        val poller = dev.toffee.companion.reminders.ReminderPoller(
+            http = ToffeeHttp.client(),
+            baseUrl = ToffeeConfig.baseUrl,
+            apiKey = ToffeeConfig.publishableKey,
+            session = s,
+        )
+        val found = poller.pollOnce()
+        println("POLLED ${found.size}: " + found.joinToString { it.text })
+        assertTrue(
+            "the tablet did not see the reminder seeded as $mark",
+            found.any { it.text.contains(mark!!) },
+        )
+
+        // And it does not hand the same one over twice.
+        assertTrue(
+            "a second poll must not repeat it",
+            poller.pollOnce().none { it.text.contains(mark!!) },
+        )
+    }
+
     @Test
     fun theApkCarriesNoSecret() {
         assertTrue(ToffeeConfig.publishableKey.startsWith("sb_publishable_"))
