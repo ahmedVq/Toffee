@@ -20,8 +20,11 @@ const FALLBACK =
   "My brain's out of juice for the moment. Give me a little while and ask me again.";
 const EMPTY_FALLBACK = "I got a bit carried away there. Ask me again?";
 
-// deno-lint-ignore no-explicit-any
-type Part = Record<string, any>;
+type Part = {
+  text?: string;
+  thought?: boolean;
+  functionCall?: { name: string; args?: unknown };
+} & Record<string, unknown>;
 
 // Splits off complete sentences. A terminator followed by whitespace ends a sentence; a
 // terminator at the very end of the buffer does too (so the last sentence of a chunk is
@@ -165,13 +168,14 @@ async function converse(opts: TurnOpts): Promise<TurnResult> {
     pending = "";
     if (raw && !/\s$/.test(raw)) raw += " ";
 
-    const fnCalls = r.parts.filter((p) => p.functionCall);
+    const fnCalls = r.parts.flatMap((p) =>
+      p.functionCall ? [p.functionCall] : []
+    );
     if (!fnCalls.length || round === MAX_TOOL_ROUNDS) break;
 
     contents.push({ role: "model", parts: r.parts });
     const responses: Part[] = [];
-    for (const p of fnCalls) {
-      const { name, args } = p.functionCall;
+    for (const { name, args } of fnCalls) {
       let response: Record<string, unknown>;
       try {
         const result = await opts.dispatch(name, args ?? {});

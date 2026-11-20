@@ -4,8 +4,13 @@ import { runTurn, type ToolSpec } from "../supabase/functions/_shared/llm.ts";
 Deno.env.set("GEMINI_API_KEY", "test-key-not-real");
 
 type Chunk = Record<string, unknown>;
-// deno-lint-ignore no-explicit-any
-type Req = { url: string; headers: Headers; body: any };
+type Content = { role: string; parts: Record<string, unknown>[] };
+type ReqBody = {
+  systemInstruction?: unknown;
+  contents: Content[];
+  tools?: unknown;
+};
+type Req = { url: string; headers: Headers; body: ReqBody };
 
 const enc = new TextEncoder();
 const sse = (chunk: Chunk) =>
@@ -199,7 +204,10 @@ Deno.test("an unknown tool name returns an error to the model and the turn conti
         dispatch: (name) => Promise.reject(new Error(`unknown tool ${name}`)),
       });
       assertEquals(out.reply, "Sorry, cannot do that.");
-      const fr = reqs[1].body.contents.at(-1).parts[0].functionResponse;
+      const fr = reqs[1].body.contents.at(-1)!.parts[0].functionResponse as {
+        name: string;
+        response: unknown;
+      };
       assertEquals(fr.name, "nope");
       assertEquals(fr.response, { error: "unknown tool nope" });
     },
