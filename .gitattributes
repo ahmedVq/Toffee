@@ -1,0 +1,7 @@
+# The Gradle wrapper script is executed by sh. CRLF line endings make it
+# fail with a bare "\r: command not found", so it stays LF everywhere.
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Binary; never let it near line-ending conversion.
+gradle/wrapper/gradle-wrapper.jar binary
