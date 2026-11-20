@@ -11,7 +11,14 @@ export type ToolSpec = {
 };
 export type ToolResult = { name: string; result: unknown };
 
-const MODEL = "gemini-2.5-flash";
+// gemini-2.5-flash is closed to new API keys; 3.5-flash is the current
+// equivalent. Overridable by env because model availability has already
+// shifted once under us — this is evidence, not speculation.
+/** Comfortably inside Supabase's 150s idle limit, and far outside a
+ * conversational pause. */
+export const DEFAULT_TIMEOUT_MS = 25_000;
+
+const MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-3.5-flash";
 const ENDPOINT =
   `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:streamGenerateContent?alt=sse`;
 const MAX_TOOL_ROUNDS = 5;
@@ -49,14 +56,26 @@ async function streamRound(
   key: string,
   body: unknown,
   onText: (t: string) => void,
+  timeoutMs: number,
 ): Promise<
   { status: number; parts: Part[]; usage: { in: number; out: number } }
 > {
-  const res = await fetch(ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify(body),
-  });
+  // Without a deadline a slow model rides all the way to the platform's own
+  // idle timeout, and the tablet gets nothing at all. Giving up early and
+  // saying something is always better than going quiet.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     await res.body?.cancel();
     return { status: res.status, parts: [], usage: { in: 0, out: 0 } };
@@ -103,6 +122,8 @@ type TurnOpts = {
   tools: ToolSpec[];
   dispatch: (name: string, args: unknown) => Promise<unknown>;
   onSentence?: (s: string) => void;
+  /** Per-request deadline. Defaults to DEFAULT_TIMEOUT_MS. */
+  timeoutMs?: number;
 };
 type TurnResult = {
   reply: string;
@@ -158,7 +179,7 @@ async function converse(opts: TurnOpts): Promise<TurnResult> {
       body.tools = [{ functionDeclarations: opts.tools }];
     }
 
-    const r = await streamRound(key, body, onText);
+    const r = await streamRound(key, body, onText, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     if (r.status !== 200) {
       throw new Error(`Gemini request failed with status ${r.status}`);
     }

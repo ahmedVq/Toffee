@@ -312,3 +312,36 @@ Deno.test("a 500 from the API resolves with a spoken fallback, not a rejection",
     console.error = quiet;
   }
 });
+
+// Found in production: gemini-3.5-flash intermittently hangs, and with no
+// deadline the request rode all the way to Supabase's 150s idle timeout. The
+// tablet got nothing at all — worse than a joke that lands badly, because a
+// companion that goes silent for two and a half minutes looks broken.
+Deno.test("a hanging model resolves with the fallback instead of waiting forever", async () => {
+  const original = globalThis.fetch;
+  // A faithful stall: never resolves, but honours abort the way a real
+  // fetch does. A stub that ignores the signal cannot test a deadline.
+  globalThis.fetch = ((_url: unknown, init?: { signal?: AbortSignal }) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => reject(new DOMException("Aborted", "AbortError")),
+      );
+    })) as unknown as typeof fetch;
+  try {
+    const started = Date.now();
+    const out = await runTurn({
+      system: "s",
+      history: [{ role: "user", content: "hi" }],
+      tools: [],
+      dispatch: () => Promise.resolve({}),
+      timeoutMs: 300,
+    });
+    const elapsed = Date.now() - started;
+    assert(out.reply.length > 0, "must still say something");
+    assertEquals(out.calls, []);
+    assert(elapsed < 5000, `should give up promptly, took ${elapsed}ms`);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
