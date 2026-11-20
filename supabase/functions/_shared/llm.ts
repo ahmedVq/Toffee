@@ -1,8 +1,8 @@
 // Gemini client: sends the conversation plus tool declarations, runs any tool calls the
 // model asks for, feeds results back, and streams the reply out sentence by sentence.
 
-// Task 3 will move Msg to types.ts.
-export type Msg = { role: "user" | "model"; content: string };
+export type { Msg } from "./types.ts";
+import type { Msg } from "./types.ts";
 
 export type ToolSpec = {
   name: string;
