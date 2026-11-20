@@ -19,11 +19,19 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:stateNotNeeded="true"
             android:screenOrientation="landscape"
             android:theme="@style/Theme.Toffee">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- The tablet stops being a tablet here: with HOME and DEFAULT
+                 there is no launcher to go back to. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
@@ -38,6 +46,34 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="dev.toffee.companion.REMINDER_DUE" />
+            </intent-filter>
+        </receiver>
+
+        <activity
+            android:name=".kiosk.MaintenanceActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.Toffee" />
+
+        <receiver
+            android:name=".kiosk.ToffeeDeviceAdmin"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".kiosk.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
 
