@@ -44,7 +44,7 @@ async function allTasks(): Promise<Task[]> {
 
 /** The single task a query names, an AmbiguousMatch if it is too close to
  * call, or null if nothing is close enough. */
-async function findOne(
+export async function findTask(
   titleQuery: string,
 ): Promise<Task | AmbiguousMatch | null> {
   const q = tokens(titleQuery);
@@ -100,7 +100,7 @@ async function setStatus(
   titleQuery: string,
   status: "open" | "done",
 ): Promise<Task | AmbiguousMatch | null> {
-  const found = await findOne(titleQuery);
+  const found = await findTask(titleQuery);
   if (found === null || "ambiguous" in found) return found;
 
   const { data, error } = await serviceClient()
@@ -122,7 +122,7 @@ export function uncompleteTask(titleQuery: string) {
 }
 
 export async function deleteTask(titleQuery: string): Promise<boolean> {
-  const found = await findOne(titleQuery);
+  const found = await findTask(titleQuery);
   if (found === null || "ambiguous" in found) return false;
 
   const { error } = await serviceClient().from("tasks").delete().eq("id", found.id);
