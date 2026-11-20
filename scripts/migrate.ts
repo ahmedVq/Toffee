@@ -1,5 +1,11 @@
 // Applies supabase/migrations/*.sql to the hosted project through the
 // Supabase Management API (the Supabase CLI is unavailable on this machine).
+//
+// Migrations must NOT contain transaction control (begin/commit/rollback) or
+// statements that cannot run in a transaction (create index concurrently).
+// Each file is sent with its _migrations ledger insert as one request, which
+// the endpoint runs as a single transaction (verified: a failing last
+// statement rolls back earlier ones and records nothing).
 // Usage: deno run -A scripts/migrate.ts
 
 async function loadEnv(): Promise<Record<string, string>> {
