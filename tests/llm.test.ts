@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "@std/assert";
 import { runTurn, type ToolSpec } from "../supabase/functions/_shared/llm.ts";
 
 Deno.env.set("GEMINI_API_KEY", "test-key-not-real");
@@ -8,13 +8,16 @@ type Chunk = Record<string, unknown>;
 type Req = { url: string; headers: Headers; body: any };
 
 const enc = new TextEncoder();
-const sse = (chunk: Chunk) => enc.encode(`data: ${JSON.stringify(chunk)}\r\n\r\n`);
+const sse = (chunk: Chunk) =>
+  enc.encode(`data: ${JSON.stringify(chunk)}\r\n\r\n`);
 const textChunk = (text: string): Chunk => ({
   candidates: [{ content: { role: "model", parts: [{ text }] } }],
   usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
 });
 const callChunk = (name: string, args: unknown): Chunk => ({
-  candidates: [{ content: { role: "model", parts: [{ functionCall: { name, args } }] } }],
+  candidates: [{
+    content: { role: "model", parts: [{ functionCall: { name, args } }] },
+  }],
   usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
 });
 const sseResponse = (chunks: Chunk[]) =>
@@ -97,11 +100,18 @@ Deno.test("executes a functionCall from the model and sends the result back", as
       const contents = reqs[1].body.contents;
       assertEquals(contents.at(-2), {
         role: "model",
-        parts: [{ functionCall: { name: "get_weather", args: { city: "Cairo" } } }],
+        parts: [{
+          functionCall: { name: "get_weather", args: { city: "Cairo" } },
+        }],
       });
       assertEquals(contents.at(-1), {
         role: "user",
-        parts: [{ functionResponse: { name: "get_weather", response: { result: { temp: 31 } } } }],
+        parts: [{
+          functionResponse: {
+            name: "get_weather",
+            response: { result: { temp: 31 } },
+          },
+        }],
       });
     },
   );
@@ -114,21 +124,32 @@ Deno.test("loops when the model calls a second tool after the first result", asy
     () => sseResponse([textChunk("Done.")]),
   ];
   await withFetch((n) => script[n](), async (reqs) => {
-    const out = await runTurn({ ...base, dispatch: (_n, a) => Promise.resolve(a) });
+    const out = await runTurn({
+      ...base,
+      dispatch: (_n, a) => Promise.resolve(a),
+    });
     assertEquals(reqs.length, 3);
-    assertEquals(out.calls.map((c) => c.result), [{ city: "A" }, { city: "B" }]);
+    assertEquals(out.calls.map((c) => c.result), [{ city: "A" }, {
+      city: "B",
+    }]);
     assertEquals(out.reply, "Done.");
   });
 });
 
 Deno.test("stops after 5 tool rounds rather than looping forever", async () => {
-  await withFetch(() => sseResponse([callChunk("get_weather", {})]), async (reqs) => {
-    const out = await runTurn({ ...base, dispatch: () => Promise.resolve("x") });
-    assertEquals(out.calls.length, 5);
-    assertEquals(reqs.length, 6); // 5 tool rounds + one final tool-less request
-    assertEquals(reqs[5].body.tools, undefined);
-    assert(out.reply.length > 0);
-  });
+  await withFetch(
+    () => sseResponse([callChunk("get_weather", {})]),
+    async (reqs) => {
+      const out = await runTurn({
+        ...base,
+        dispatch: () => Promise.resolve("x"),
+      });
+      assertEquals(out.calls.length, 5);
+      assertEquals(reqs.length, 6); // 5 tool rounds + one final tool-less request
+      assertEquals(reqs[5].body.tools, undefined);
+      assert(out.reply.length > 0);
+    },
+  );
 });
 
 Deno.test("onSentence fires per sentence while streaming", async () => {
@@ -136,7 +157,9 @@ Deno.test("onSentence fires per sentence while streaming", async () => {
   const atSecondChunk: string[][] = [];
   const body = new ReadableStream({
     async start(c) {
-      c.enqueue(sse(textChunk("Why did the robot cross the road? Because it was pro")));
+      c.enqueue(
+        sse(textChunk("Why did the robot cross the road? Because it was pro")),
+      );
       await new Promise((r) => setTimeout(r, 20));
       atSecondChunk.push([...fired]); // snapshot before the rest of the reply exists
       c.enqueue(sse(textChunk("grammed to! Ha. And it is")));
@@ -157,13 +180,19 @@ Deno.test("onSentence fires per sentence while streaming", async () => {
       "Ha.",
       "And it is all",
     ]);
-    assertEquals(out.reply, "Why did the robot cross the road? Because it was programmed to! Ha. And it is all");
+    assertEquals(
+      out.reply,
+      "Why did the robot cross the road? Because it was programmed to! Ha. And it is all",
+    );
   });
 });
 
 Deno.test("an unknown tool name returns an error to the model and the turn continues", async () => {
   await withFetch(
-    (n) => n === 0 ? sseResponse([callChunk("nope", {})]) : sseResponse([textChunk("Sorry, cannot do that.")]),
+    (n) =>
+      n === 0
+        ? sseResponse([callChunk("nope", {})])
+        : sseResponse([textChunk("Sorry, cannot do that.")]),
     async (reqs) => {
       const out = await runTurn({
         ...base,
@@ -180,12 +209,17 @@ Deno.test("an unknown tool name returns an error to the model and the turn conti
 Deno.test("malformed tool arguments do not throw out of runTurn", async () => {
   for (const bad of ["{not json", null, 42, undefined]) {
     await withFetch(
-      (n) => n === 0 ? sseResponse([callChunk("get_weather", bad)]) : sseResponse([textChunk("Hmm.")]),
+      (n) =>
+        n === 0
+          ? sseResponse([callChunk("get_weather", bad)])
+          : sseResponse([textChunk("Hmm.")]),
       async () => {
         const out = await runTurn({
           ...base,
           dispatch: (_n, a) => {
-            if (typeof a !== "object" || a === null) throw new Error("bad args");
+            if (typeof a !== "object" || a === null) {
+              throw new Error("bad args");
+            }
             return Promise.resolve("ok");
           },
         });
@@ -196,13 +230,44 @@ Deno.test("malformed tool arguments do not throw out of runTurn", async () => {
 });
 
 Deno.test("a 429 from the API resolves with a spoken fallback, not a rejection", async () => {
-  await withFetch(
-    () =>
-      new Response(
-        JSON.stringify({ error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "quota" } }),
-        { status: 429 },
-      ),
-    async () => {
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    await withFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 429,
+              status: "RESOURCE_EXHAUSTED",
+              message: "quota",
+            },
+          }),
+          { status: 429 },
+        ),
+      async () => {
+        const spoken: string[] = [];
+        const out = await runTurn({
+          ...base,
+          dispatch: () => Promise.resolve(null),
+          onSentence: (s) => spoken.push(s),
+        });
+        assert(out.reply.length > 0);
+        assertEquals(out.calls, []);
+        assert(!out.reply.includes("test-key-not-real"));
+        assertEquals(spoken.join(" "), out.reply);
+      },
+    );
+  } finally {
+    console.error = quiet;
+  }
+});
+
+Deno.test("a 500 from the API resolves with a spoken fallback, not a rejection", async () => {
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const run = async () => {
       const spoken: string[] = [];
       const out = await runTurn({
         ...base,
@@ -212,7 +277,30 @@ Deno.test("a 429 from the API resolves with a spoken fallback, not a rejection",
       assert(out.reply.length > 0);
       assertEquals(out.calls, []);
       assert(!out.reply.includes("test-key-not-real"));
+      assert(!out.reply.includes("SECRET-BODY"));
       assertEquals(spoken.join(" "), out.reply);
-    },
-  );
+    };
+    await withFetch(
+      () => new Response("SECRET-BODY stack trace", { status: 500 }),
+      run,
+    );
+    // network failure
+    const orig = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.reject(new TypeError("boom test-key-not-real"))) as typeof fetch;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = orig;
+    }
+    // missing key
+    Deno.env.delete("GEMINI_API_KEY");
+    try {
+      await run();
+    } finally {
+      Deno.env.set("GEMINI_API_KEY", "test-key-not-real");
+    }
+  } finally {
+    console.error = quiet;
+  }
 });

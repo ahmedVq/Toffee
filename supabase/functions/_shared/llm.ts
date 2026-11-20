@@ -4,7 +4,11 @@
 // Task 3 will move Msg to types.ts.
 export type Msg = { role: "user" | "model"; content: string };
 
-export type ToolSpec = { name: string; description: string; parameters: object };
+export type ToolSpec = {
+  name: string;
+  description: string;
+  parameters: object;
+};
 export type ToolResult = { name: string; result: unknown };
 
 const MODEL = "gemini-2.5-flash";
@@ -12,7 +16,8 @@ const ENDPOINT =
   `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:streamGenerateContent?alt=sse`;
 const MAX_TOOL_ROUNDS = 5;
 
-const QUOTA_FALLBACK = "My brain's out of juice for the moment. Give me a little while and ask me again.";
+const FALLBACK =
+  "My brain's out of juice for the moment. Give me a little while and ask me again.";
 const EMPTY_FALLBACK = "I got a bit carried away there. Ask me again?";
 
 // deno-lint-ignore no-explicit-any
@@ -41,7 +46,9 @@ async function streamRound(
   key: string,
   body: unknown,
   onText: (t: string) => void,
-): Promise<{ status: number; parts: Part[]; usage: { in: number; out: number } }> {
+): Promise<
+  { status: number; parts: Part[]; usage: { in: number; out: number } }
+> {
   const res = await fetch(ENDPOINT, {
     method: "POST",
     headers: { "content-type": "application/json", "x-goog-api-key": key },
@@ -54,7 +61,9 @@ async function streamRound(
   const parts: Part[] = [];
   const usage = { in: 0, out: 0 };
   const handle = (event: string) => {
-    const data = event.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("");
+    const data = event.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((
+      l,
+    ) => l.slice(5).trim()).join("");
     if (!data) return;
     let chunk;
     try {
@@ -85,17 +94,40 @@ async function streamRound(
   return { status: res.status, parts, usage };
 }
 
-export async function runTurn(opts: {
+type TurnOpts = {
   system: string;
   history: Msg[];
   tools: ToolSpec[];
   dispatch: (name: string, args: unknown) => Promise<unknown>;
   onSentence?: (s: string) => void;
-}): Promise<{ reply: string; calls: ToolResult[]; spent: { in: number; out: number } }> {
-  const key = Deno.env.get("GEMINI_API_KEY");
-  if (!key) throw new Error("GEMINI_API_KEY is not set");
+};
+type TurnResult = {
+  reply: string;
+  calls: ToolResult[];
+  spent: { in: number; out: number };
+};
 
-  const contents: unknown[] = opts.history.map((m) => ({ role: m.role, parts: [{ text: m.content }] }));
+// Never rejects: any failure to get a usable reply (quota, 4xx/5xx, network, missing key)
+// resolves with a spoken in-character line, so no error text or stack reaches the tablet.
+export async function runTurn(opts: TurnOpts): Promise<TurnResult> {
+  try {
+    return await converse(opts);
+  } catch (e) {
+    // Log the error name only: messages could echo request details, and the key must never be logged.
+    console.error("llm turn failed:", e instanceof Error ? e.name : "unknown");
+    opts.onSentence?.(FALLBACK);
+    return { reply: FALLBACK, calls: [], spent: { in: 0, out: 0 } };
+  }
+}
+
+async function converse(opts: TurnOpts): Promise<TurnResult> {
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) throw new Error("missing key");
+
+  const contents: unknown[] = opts.history.map((m) => ({
+    role: m.role,
+    parts: [{ text: m.content }],
+  }));
   const calls: ToolResult[] = [];
   const spent = { in: 0, out: 0 };
   let pending = "";
@@ -124,8 +156,9 @@ export async function runTurn(opts: {
     }
 
     const r = await streamRound(key, body, onText);
-    if (r.status === 429) return fallback(QUOTA_FALLBACK);
-    if (r.status !== 200) throw new Error(`Gemini request failed with status ${r.status}`);
+    if (r.status !== 200) {
+      throw new Error(`Gemini request failed with status ${r.status}`);
+    }
     spent.in += r.usage.in;
     spent.out += r.usage.out;
     if (pending.trim()) opts.onSentence?.(pending.trim());
