@@ -5,7 +5,7 @@
 // Edge Functions can rely on it.
 
 import { assertEquals, assertExists } from "@std/assert";
-import { serviceClient } from "../supabase/functions/_shared/db.ts";
+import { resolveSecretKey, serviceClient } from "../supabase/functions/_shared/db.ts";
 
 Deno.test("serviceClient reads a row the device cannot", async () => {
   const db = serviceClient();
@@ -32,4 +32,20 @@ Deno.test("serviceClient reads a row the device cannot", async () => {
   } finally {
     await db.from("said_log").delete().eq("topic_key", topicKey);
   }
+});
+
+// Deploy-only bug caught at Task 12: Supabase reserves every SUPABASE_* secret
+// name and injects its own set into Edge Functions. Locally .env supplies
+// SUPABASE_SECRET_KEY; in production only SUPABASE_SERVICE_ROLE_KEY exists.
+// Without the fallback every deployed function fails at the first query.
+Deno.test("the secret key resolves from either local or Edge-runtime naming", () => {
+  assertEquals(
+    resolveSecretKey((n) => (n === "SUPABASE_SECRET_KEY" ? "local" : undefined)),
+    "local",
+  );
+  assertEquals(
+    resolveSecretKey((n) => (n === "SUPABASE_SERVICE_ROLE_KEY" ? "deployed" : undefined)),
+    "deployed",
+  );
+  assertEquals(resolveSecretKey(() => undefined), "");
 });

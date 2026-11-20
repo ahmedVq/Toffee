@@ -27,6 +27,16 @@ function env(name: string): string {
   return "";
 }
 
+/** Supabase reserves every SUPABASE_* secret name and injects its own set
+ * into Edge Functions, so the key is called SUPABASE_SECRET_KEY locally (from
+ * .env) but SUPABASE_SERVICE_ROLE_KEY once deployed. Both name the same
+ * service-role credential. */
+export function resolveSecretKey(
+  lookup: (name: string) => string | undefined,
+): string {
+  return lookup("SUPABASE_SECRET_KEY") || lookup("SUPABASE_SERVICE_ROLE_KEY") || "";
+}
+
 let cached: SupabaseClient | null = null;
 
 /** The service-role client. Cached, because creating one per call would open
@@ -35,9 +45,11 @@ export function serviceClient(): SupabaseClient {
   if (cached) return cached;
 
   const url = env("SUPABASE_URL");
-  const key = env("SUPABASE_SECRET_KEY");
+  const key = resolveSecretKey((n) => env(n) || undefined);
   if (!url || !key) {
-    throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY must be set");
+    throw new Error(
+      "SUPABASE_URL and one of SUPABASE_SECRET_KEY / SUPABASE_SERVICE_ROLE_KEY must be set",
+    );
   }
 
   cached = createClient(url, key, {

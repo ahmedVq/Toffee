@@ -76,3 +76,43 @@ export async function sweepDue(now: Date = new Date()): Promise<Reminder[]> {
 
   return due.map(toReminder);
 }
+
+export type Broadcaster = (reminder: Reminder) => Promise<void>;
+
+export type SweepDeps = { broadcast?: Broadcaster };
+
+/** Realtime push, best-effort. The tablet also sets a local alarm, and the
+ * fired list is in the response either way. */
+async function realtimeBroadcast(reminder: Reminder): Promise<void> {
+  const db = serviceClient();
+  const channel = db.channel("toffee");
+  await channel.subscribe();
+  await channel.send({ type: "broadcast", event: "reminder", payload: reminder });
+  await db.removeChannel(channel);
+}
+
+/** Sweeping and announcing are separate concerns, and failing to announce
+ * must never discard what was swept: those reminders are already marked
+ * fired, so losing the list here loses them permanently. */
+export async function sweepHandler(deps: SweepDeps = {}): Promise<Response> {
+  let fired: Reminder[];
+  try {
+    fired = await sweepDue();
+  } catch (e) {
+    console.error("sweep failed:", e instanceof Error ? e.name : "unknown");
+    return Response.json({ fired: [], broadcast: "skipped", error: "sweep failed" });
+  }
+
+  if (!fired.length) return Response.json({ fired: [], broadcast: "skipped" });
+
+  const send = deps.broadcast ?? realtimeBroadcast;
+  let status = "sent";
+  try {
+    for (const reminder of fired) await send(reminder);
+  } catch (e) {
+    console.error("broadcast failed:", e instanceof Error ? e.name : "unknown");
+    status = "failed";
+  }
+
+  return Response.json({ fired, broadcast: status });
+}

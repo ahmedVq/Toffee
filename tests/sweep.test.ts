@@ -6,7 +6,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { serviceClient } from "../supabase/functions/_shared/db.ts";
-import { sweepDue } from "../supabase/functions/_shared/sweep.ts";
+import { sweepDue, sweepHandler } from "../supabase/functions/_shared/sweep.ts";
 
 const db = serviceClient();
 const MARK = `zz${crypto.randomUUID().slice(0, 8)}`;
@@ -89,5 +89,43 @@ Deno.test("a reminder four hours overdue still fires", async () => {
     1,
     "an overdue reminder must still fire; the sweep has no lower bound",
   );
+  await wipe();
+});
+
+// Found at deploy: the function swept correctly, then the Realtime broadcast
+// threw, and the catch returned { fired: [] }. The reminder was marked fired
+// in the database but never announced — silently lost, which is the one
+// failure a reminder must never have. The broadcast is best-effort; the
+// fired list is not.
+Deno.test("a broadcast failure still returns the fired reminders", async () => {
+  await wipe();
+  await seed("announce me", at(-60_000));
+
+  const res = await sweepHandler({
+    broadcast: () => Promise.reject(new Error("realtime is down")),
+  });
+  const body = await res.json();
+
+  assertEquals(res.status, 200);
+  assertEquals(mine(body.fired).length, 1, "a failed broadcast must not swallow the list");
+  assertEquals(body.broadcast, "failed");
+  await wipe();
+});
+
+Deno.test("a successful sweep reports the broadcast as sent", async () => {
+  await wipe();
+  await seed("announce me too", at(-60_000));
+
+  const sent: unknown[] = [];
+  const res = await sweepHandler({
+    broadcast: (r) => {
+      sent.push(r);
+      return Promise.resolve();
+    },
+  });
+  const body = await res.json();
+  assertEquals(mine(body.fired).length, 1);
+  assertEquals(body.broadcast, "sent");
+  assertEquals(sent.length, 1);
   await wipe();
 });
