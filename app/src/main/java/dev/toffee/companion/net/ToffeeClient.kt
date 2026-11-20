@@ -29,6 +29,18 @@ data class Reply(
 )
 
 /**
+ * The two things the tablet says to the backend, as a seam.
+ *
+ * Brain orchestrates; ToffeeClient talks. Splitting them here is what lets
+ * "a second reminder arriving while it is still speaking" be asserted in a
+ * test rather than hoped for.
+ */
+interface Agent {
+    suspend fun turn(text: String): Reply
+    suspend fun event(kind: String, payload: Map<String, Any?> = emptyMap()): Reply
+}
+
+/**
  * The two things the tablet says to the backend.
  *
  * `/turn` is Ahmed talking. `/event` is something happening — he arrived, he
@@ -44,12 +56,12 @@ class ToffeeClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val session: Session,
-) {
+) : Agent {
 
-    suspend fun turn(text: String): Reply =
+    override suspend fun turn(text: String): Reply =
         post("turn", buildJsonObject { put("text", text) })
 
-    suspend fun event(kind: String, payload: Map<String, Any?> = emptyMap()): Reply =
+    override suspend fun event(kind: String, payload: Map<String, Any?>): Reply =
         post(
             "event",
             buildJsonObject {
