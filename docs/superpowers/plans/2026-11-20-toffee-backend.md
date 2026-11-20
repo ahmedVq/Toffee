@@ -153,10 +153,12 @@ Expected: PASS, negatives included.
 **Interfaces:**
 - Produces:
   - `serviceClient(): SupabaseClient` — secret key, used inside functions only.
+  - Row mappers, one per table, living here and nowhere else: Postgres columns are `snake_case`, TypeScript fields are `camelCase`, and `db.ts` owns that translation so no other file repeats it.
   - `type Task = { id: string; title: string; status: "open" | "done"; dueAt: string | null; project: string | null }`
   - `type Reminder = { id: string; text: string; dueAt: string; firedAt: string | null; recurring: string | null }`
   - `type Memory = { id: string; fact: string; category: string }`
   - `type Msg = { role: "user" | "model"; content: string }` — the history shape `runTurn` takes in Task 7.
+  - `type Mood = "neutral" | "happy" | "sad" | "frustrated" | "loving" | "smug" | "sleepy" | "listening"` — consumed by Tasks 10 and 11, and by the tablet's face.
   - `type Ctx` — the context block injected into every prompt: `{ now: string; present: boolean; atDeskMinutes: number | null; tabletBattery: number | null; openTaskCount: number; lastSaid: string | null }`
 
 - [ ] **Step 1: Write the failing test**
@@ -192,6 +194,8 @@ Expected: PASS, negatives included.
 "completeTask matches loosely: 'the deck thing' finds 'Fix the deck'"
 "completeTask is idempotent — completing a done task is not an error"
 "completeTask on an unknown title returns null, not a throw"
+"uncompleteTask reopens a done task"
+"deleteTask removes a matched task and returns false for no match"
 ```
 
 Review Focus test, same file:
@@ -237,6 +241,9 @@ Matching: normalise case and punctuation, then score by token overlap. If the to
 "stored due_at is UTC, not local"
 "nag('the deck thing', 'in 2 hours') stores a reminder naming that task"
 "nag on an unknown task returns null rather than a free-floating reminder"
+"startTimer(50, 'focus') creates a reminder due 50 minutes out"
+"listReminders returns only unfired reminders, soonest first"
+"cancelReminder removes a pending reminder and returns false for no match"
 ```
 
 Review Focus test, same file:
@@ -279,6 +286,7 @@ Resolve wall-clock times with `Intl.DateTimeFormat` in the `Africa/Cairo` zone r
    — remember("Ahmed hates standup meetings"), recall("does he like
      morning meetings") ranks it first
 "recall returns [] on an empty store rather than throwing"
+"updateProfile writes a field readable by a later buildContext"
 ```
 
 - [ ] **Step 2: Run, fail. Step 3: Implement.** The paraphrase test is the one that proves embeddings are wired, not substring search.
@@ -422,7 +430,7 @@ Review Focus test, same file:
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: `POST /turn { text: string }` → `{ reply: string; mood: Mood; calls: ToolResult[] }` where `type Mood = "neutral" | "happy" | "sad" | "frustrated" | "loving" | "smug" | "sleepy" | "listening"`.
+- Produces: `POST /turn { text: string }` → `{ reply: string; mood: Mood; calls: ToolResult[] }`. `Mood` comes from Task 3.
 - Must call `noteSpend(spent.in, spent.out)` after every `runTurn`. Without this the governor's cost dimension never trips and the free tier is spent silently.
 - `tools/index.ts` exports `ALL_TOOLS: ToolSpec[]` and `dispatch(name, args)` wiring Tasks 4–6 into the shape Task 7 expects.
 
