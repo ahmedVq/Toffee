@@ -152,6 +152,20 @@ for (const [table, row] of Object.entries(seed)) {
 // _migrations has no id; its rows exist from the runner.
 
 
+// WHAT EACH NEGATIVE ACTUALLY PROVES (read before trusting a green run)
+//   - Reads (assertReadHidden): prove the SELECT gate.
+//   - Inserts (assertInsertDenied, return=minimal): prove the INSERT gate
+//     independently of SELECT.
+//   - Update/delete on a table the caller cannot SELECT (device on memories,
+//     said_log, conversation, llm_spend, presence_events; anon and stranger on
+//     tasks/reminders): UPDATE/DELETE with a WHERE must read the row first, so
+//     the missing SELECT policy already yields zero rows. These tests prove the
+//     property "the row is untouched", but they do NOT separately guard the
+//     UPDATE/DELETE policies. For a table the caller cannot read, no
+//     client-side test can tell the two gates apart.
+//   - Update/delete on tables the device CAN select (tasks/reminders delete,
+//     profile update/delete) do exercise the UPDATE/DELETE gate directly.
+
 // ---- assertions helpers ----------------------------------------------------
 
 const isDenied = (r: Res) =>
@@ -181,7 +195,10 @@ async function assertInsertDenied(
   row: Record<string, unknown>,
   markerCol: string,
 ) {
-  const r = await rest(who, "POST", table, row);
+  // return=minimal is essential: with RETURNING, Postgres also applies SELECT
+  // policies and raises the same 42501 when the caller cannot read the row back,
+  // which would mask a missing insert gate.
+  const r = await rest(who, "POST", table, row, "return=minimal");
   assert(
     isDenied(r),
     `${who.name} insert ${table}: expected 42501, got ${r.status} ${JSON.stringify(r.body)}`,
