@@ -82,14 +82,41 @@ class BlinkTest {
 
     @Test
     fun `a blink is quick`() {
+        // Measured during one forward pass. The schedule only keeps the
+        // current blink and the next one — it does not remember the whole
+        // night — so re-probing an earlier moment is not something to rely on.
         val b = Blink(seed = 5)
-        val starts = blinkStarts(b, LEFT, 60_000)
-        assertTrue("no blink in a minute", starts.isNotEmpty())
-        for (start in starts) {
-            var dur = 0L
-            while (b.isBlinkingAt(start + dur, LEFT) && dur < 2_000) dur += 10
-            assertTrue("a blink lasted ${dur}ms; that is a wink", dur in 50L..250L)
+        val durations = mutableListOf<Long>()
+        var run = 0L
+        var t = 0L
+        while (t < 60_000) {
+            if (b.isBlinkingAt(t, LEFT)) {
+                run += 10
+            } else if (run > 0) {
+                durations += run
+                run = 0
+            }
+            t += 10
         }
+        assertTrue("no blink in a minute", durations.isNotEmpty())
+        for (d in durations) {
+            assertTrue("a blink lasted ${d}ms; that is a wink", d in 50L..250L)
+        }
+    }
+
+    // The memory fix narrowed the contract: time must move forward. Nothing
+    // in production rewinds — FaceView feeds elapsedRealtime — but the
+    // narrowing is deliberate and belongs in a test rather than a comment.
+    @Test
+    fun `it only answers about time moving forward`() {
+        val b = Blink(seed = 9)
+        var blinks = 0
+        var t = 0L
+        while (t < 120_000) {
+            if (b.isBlinkingAt(t, LEFT)) blinks++
+            t += 10
+        }
+        assertTrue("a forward scan still sees blinks", blinks > 0)
     }
 
     @Test

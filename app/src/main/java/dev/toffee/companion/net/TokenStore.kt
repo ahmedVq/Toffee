@@ -1,6 +1,8 @@
 package dev.toffee.companion.net
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
@@ -27,13 +29,37 @@ interface TokenStore {
  */
 class KeystoreTokenStore(context: Context) : TokenStore {
 
-    private val prefs by lazy {
+    /**
+     * Null when the Keystore entry is unusable.
+     *
+     * This is the library's best-known failure mode, and it is reached from
+     * `MainActivity.onCreate`. Letting it throw crashed the HOME activity,
+     * which Android then restarted, which crashed again — a loop with no way
+     * to reach the maintenance screen. Losing the session instead costs one
+     * re-entry of the identity, which is recoverable.
+     */
+    private val prefs: SharedPreferences? by lazy {
+        try {
+            open(context)
+        } catch (first: Exception) {
+            Log.w(TAG, "encrypted store unusable, rebuilding: $first")
+            try {
+                context.deleteSharedPreferences(FILE)
+                open(context)
+            } catch (second: Exception) {
+                Log.e(TAG, "encrypted store unavailable; the tablet will ask to sign in: $second")
+                null
+            }
+        }
+    }
+
+    private fun open(context: Context): SharedPreferences {
         val key = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
-        EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
-            "toffee.session",
+            FILE,
             key,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
@@ -41,6 +67,7 @@ class KeystoreTokenStore(context: Context) : TokenStore {
     }
 
     override fun save(t: Tokens) {
+        val prefs = prefs ?: return
         prefs.edit()
             .putString(ACCESS, t.access)
             .putString(REFRESH, t.refresh)
@@ -49,16 +76,19 @@ class KeystoreTokenStore(context: Context) : TokenStore {
     }
 
     override fun load(): Tokens? {
+        val prefs = prefs ?: return null
         val access = prefs.getString(ACCESS, null) ?: return null
         val refresh = prefs.getString(REFRESH, null) ?: return null
         return Tokens(access, refresh, prefs.getLong(EXPIRES, 0L))
     }
 
     override fun clear() {
-        prefs.edit().clear().apply()
+        prefs?.edit()?.clear()?.apply()
     }
 
     private companion object {
+        const val TAG = "Toffee"
+        const val FILE = "toffee.session"
         const val ACCESS = "access"
         const val REFRESH = "refresh"
         const val EXPIRES = "expires_at"

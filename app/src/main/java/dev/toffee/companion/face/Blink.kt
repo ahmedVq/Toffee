@@ -27,29 +27,37 @@ class Blink(seed: Long = DEFAULT_SEED) {
     fun isBlinkingAt(tMs: Long, eye: Eye): Boolean =
         schedules.getValue(eye).isBlinkingAt(tMs)
 
+    /**
+     * Two timestamps, not a list.
+     *
+     * This used to keep every blink since boot in an ArrayList, which grew
+     * by about sixteen thousand entries per eye per day and never shrank —
+     * an out-of-memory walk on a device with 780 MB free that is meant to run
+     * unattended for months. Worse, [FaceView] feeds it elapsedRealtime, so
+     * the first frame after a restart on a long-uptime device had to generate
+     * every blink since boot before it could draw anything.
+     *
+     * Only the current blink and the next one matter.
+     */
     private class Schedule(private val random: Random, private val periodMs: Long) {
-        /** Blink start times, extended on demand and never recomputed, so
-         *  asking about an earlier moment gives the same answer twice. */
-        private val starts = ArrayList<Long>()
+        private var current = 0L
         private var next = 0L
 
         init {
-            advance()
+            current = nextGap()
+            next = current + nextGap()
         }
 
-        private fun advance() {
-            next += periodMs + random.nextInt(JITTER_MS)
-            starts.add(next)
-        }
+        private fun nextGap(): Long = periodMs + random.nextInt(JITTER_MS)
 
         fun isBlinkingAt(tMs: Long): Boolean {
-            while (starts.last() <= tMs) advance()
-            // The most recent start at or before t.
-            val i = starts.binarySearch { it.compareTo(tMs) }
-            val idx = if (i >= 0) i else -i - 2
-            if (idx < 0) return false
-            val start = starts[idx]
-            return tMs - start < BLINK_MS
+            // Time only moves forward here; a rewind (a new Blink, a test)
+            // just means the schedule starts again from where it is.
+            while (next <= tMs) {
+                current = next
+                next += nextGap()
+            }
+            return tMs >= current && tMs - current < BLINK_MS
         }
     }
 

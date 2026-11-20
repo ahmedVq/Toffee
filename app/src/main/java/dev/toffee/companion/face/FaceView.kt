@@ -72,6 +72,14 @@ class FaceView @JvmOverloads constructor(
     private var glowLeft: Glow? = null
     private var glowRight: Glow? = null
 
+    // Caches. This view redraws every frame for as long as the tablet is
+    // powered, so anything allocated in onDraw is allocated for ever: a
+    // RadialGradient and two PorterDuffColorFilters a frame came to roughly
+    // 180 objects a second, several holding native shader memory.
+    private var vignetteKey: Long = Long.MIN_VALUE
+    private var litColor: Int = 0
+    private var litFilter: PorterDuffColorFilter? = null
+
     var mood: Mood
         get() = targetMood
         set(value) {
@@ -109,10 +117,10 @@ class FaceView @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         moodAnimator?.cancel()
-        glowLeft?.bitmap?.recycle()
-        glowRight?.bitmap?.recycle()
         glowLeft = null
         glowRight = null
+        litFilter = null
+        vignettePaint.shader = null
     }
 
     /** Shape snaps at the midpoint of a mood change. A pill interpolating
@@ -215,7 +223,7 @@ class FaceView @JvmOverloads constructor(
             val mx = glow.marginPx
             val my = mx * (height / restHeight).coerceAtLeast(0.05f)
             glowDst.set(rect.left - mx, rect.top - my, rect.right + mx, rect.bottom + my)
-            glowPaint.colorFilter = PorterDuffColorFilter(lit, PorterDuff.Mode.SRC_IN)
+            glowPaint.colorFilter = tintFor(lit)
             glowPaint.alpha = alpha
             canvas.drawBitmap(glow.bitmap, null, glowDst, glowPaint)
         }
@@ -289,13 +297,10 @@ class FaceView @JvmOverloads constructor(
         drawPill(Canvas(bitmap), r, shape, width * ds, paint)
 
         val glow = Glow(bitmap, margin, key)
-        if (eye == Blink.Eye.LEFT) {
-            glowLeft?.bitmap?.recycle()
-            glowLeft = glow
-        } else {
-            glowRight?.bitmap?.recycle()
-            glowRight = glow
-        }
+        // Dropped, not recycled: under hardware acceleration the previous
+        // bitmap may still be referenced by a display list the RenderThread
+        // has not finished with. GC reclaims it safely; recycle() does not.
+        if (eye == Blink.Eye.LEFT) glowLeft = glow else glowRight = glow
         return glow
     }
 
@@ -307,12 +312,17 @@ class FaceView @JvmOverloads constructor(
         val cy = height / 2f
         val r = width * 0.44f
         if (r <= 0f) return
-        vignettePaint.shader = RadialGradient(
-            cx, cy, r,
-            intArrayOf(withAlpha(tint, 56), withAlpha(tint, 20), Color.TRANSPARENT),
-            floatArrayOf(0f, 0.45f, 1f),
-            Shader.TileMode.CLAMP,
-        )
+        // Only rebuilt when the colour or the size actually changes.
+        val key = (tint.toLong() shl 32) xor (width.toLong() shl 16) xor height.toLong()
+        if (key != vignetteKey || vignettePaint.shader == null) {
+            vignettePaint.shader = RadialGradient(
+                cx, cy, r,
+                intArrayOf(withAlpha(tint, 56), withAlpha(tint, 20), Color.TRANSPARENT),
+                floatArrayOf(0f, 0.45f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+            vignetteKey = key
+        }
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), vignettePaint)
     }
 
@@ -323,6 +333,15 @@ class FaceView @JvmOverloads constructor(
         if (f in 0.99f..1.01f) return color
         fun ch(shift: Int) = (((color shr shift) and 0xFF) * f).toInt().coerceIn(0, 255)
         return (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+    }
+
+    private fun tintFor(color: Int): PorterDuffColorFilter {
+        val cached = litFilter
+        if (cached != null && color == litColor) return cached
+        val fresh = PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN)
+        litColor = color
+        litFilter = fresh
+        return fresh
     }
 
     private fun withAlpha(color: Int, alpha: Int) =

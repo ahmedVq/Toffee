@@ -3,8 +3,8 @@ package dev.toffee.companion.reminders
 /** What the tablet has already said out loud. Survives a reboot, because a
  *  tablet that forgets is a tablet that nags twice. */
 interface AnnouncedStore {
-    fun contains(id: String): Boolean
-    fun add(id: String)
+    suspend fun contains(id: String): Boolean
+    suspend fun add(id: String)
 }
 
 /**
@@ -25,10 +25,10 @@ class ReminderInbox(private val seen: AnnouncedStore) {
     /** The ones that have fired and have not been announced yet. [source] is
      *  carried for logging: which route won is worth knowing when the thing
      *  misbehaves on a desk at 3am. */
-    fun offer(source: Source, reminders: List<Reminder>): List<Reminder> =
+    suspend fun offer(source: Source, reminders: List<Reminder>): List<Reminder> =
         reminders.filter { it.firedAtMs != null && !seen.contains(it.id) }
 
-    fun markAnnounced(id: String) = seen.add(id)
+    suspend fun markAnnounced(id: String) = seen.add(id)
 
-    fun announced(id: String): Boolean = seen.contains(id)
+    suspend fun announced(id: String): Boolean = seen.contains(id)
 }

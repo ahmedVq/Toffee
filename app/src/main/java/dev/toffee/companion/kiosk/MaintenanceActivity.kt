@@ -1,6 +1,5 @@
 package dev.toffee.companion.kiosk
 
-import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -31,7 +30,7 @@ class MaintenanceActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         Kiosk.hideSystemUi(this)
 
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val pins = PinStore(this)
         val pad = (24 * resources.displayMetrics.density).toInt()
 
         val root = LinearLayout(this).apply {
@@ -106,19 +105,12 @@ class MaintenanceActivity : AppCompatActivity() {
             text = "Unlock"
             isAllCaps = false
             setOnClickListener {
-                val stored = prefs.getString(KEY_HASH, null)
-                val salt = prefs.getString(KEY_SALT, null)?.let { decodeHex(it) }
-                if (stored == null || salt == null) {
-                    // First time in: whatever is typed becomes the PIN. The
-                    // alternative is shipping a default, which is worse.
-                    val fresh = Pin.newSalt()
-                    prefs.edit()
-                        .putString(KEY_SALT, encodeHex(fresh))
-                        .putString(KEY_HASH, Pin.hash(pinField.text.toString(), fresh))
-                        .apply()
-                    status.text = "PIN set."
-                    tools.visibility = ViewGroup.VISIBLE
-                } else if (Pin.verify(pinField.text.toString(), salt, stored)) {
+                // This screen can only check a PIN. It is set during setup,
+                // because the tools below it are the way out of the kiosk.
+                if (!pins.isSet()) {
+                    status.text = "No PIN was set at setup. Sign the tablet in again to set one."
+                    tools.visibility = ViewGroup.GONE
+                } else if (pins.verify(pinField.text.toString())) {
                     status.text = ""
                     tools.visibility = ViewGroup.VISIBLE
                 } else {
@@ -141,14 +133,4 @@ class MaintenanceActivity : AppCompatActivity() {
         setContentView(ScrollView(this).apply { addView(root); setBackgroundColor(Color.BLACK) })
     }
 
-    private fun encodeHex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
-
-    private fun decodeHex(hex: String) =
-        ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
-
-    private companion object {
-        const val PREFS = "toffee.maintenance"
-        const val KEY_HASH = "pin"
-        const val KEY_SALT = "salt"
-    }
 }

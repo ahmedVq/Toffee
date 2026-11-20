@@ -1,6 +1,7 @@
 package dev.toffee.companion.reminders
 
 import dev.toffee.companion.net.Session
+import dev.toffee.companion.net.SessionState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -43,12 +44,19 @@ class ReminderPoller(
 
     /** Fired reminders not yet seen by this poller. */
     suspend fun pollOnce(): List<Reminder> {
-        val token = session.accessToken() ?: return emptyList()
         val since = formatTimestamp(cursorMs)
         val query = "select=id,text,due_at,fired_at" +
             "&fired_at=gt.${URLEncoder.encode(since, "UTF-8")}" +
             "&order=fired_at.asc" +
             "&limit=20"
+
+        val fresh = rows(query).filter { it.firedAtMs != null && it.firedAtMs > cursorMs }
+        fresh.maxOfOrNull { it.firedAtMs!! }?.let { cursorMs = it }
+        return fresh
+    }
+
+    private suspend fun rows(query: String): List<Reminder> {
+        val token = session.accessToken() ?: return emptyList()
 
         val body = withContext(Dispatchers.IO) {
             val request = Request.Builder()
@@ -66,32 +74,55 @@ class ReminderPoller(
             }
         } ?: return emptyList()
 
-        val rows = try {
+        val parsed = try {
             LENIENT.parseToJsonElement(body) as JsonArray
         } catch (_: Exception) {
             return emptyList()
         }
 
-        val fresh = rows.mapNotNull { element ->
+        return parsed.mapNotNull { element ->
             val row = element as? JsonObject ?: return@mapNotNull null
             val firedAt = parseTimestamp(row["fired_at"]?.jsonPrimitive?.contentOrNull())
-                ?: return@mapNotNull null
+            val dueAt = parseTimestamp(row["due_at"]?.jsonPrimitive?.contentOrNull())
             Reminder(
                 id = row["id"]?.jsonPrimitive?.content ?: return@mapNotNull null,
                 text = row["text"]?.jsonPrimitive?.content.orEmpty(),
-                dueAtMs = parseTimestamp(row["due_at"]?.jsonPrimitive?.contentOrNull()) ?: firedAt,
+                dueAtMs = dueAt ?: firedAt ?: return@mapNotNull null,
                 firedAtMs = firedAt,
             )
-        }.filter { it.firedAtMs!! > cursorMs }
-
-        fresh.maxOfOrNull { it.firedAtMs!! }?.let { cursorMs = it }
-        return fresh
+        }
     }
 
-    /** A thin loop around [pollOnce]. All the behaviour worth testing is in
-     *  pollOnce; this only decides how often. */
+    /**
+     * Reminders that have NOT fired yet, so local alarms can be set for them.
+     *
+     * This is the other half of the two-route design, and for a while it was
+     * missing: [pollOnce] by construction only ever returns rows that have
+     * already fired, so nothing in the app ever learned about a reminder
+     * before it was due, and the offline backstop had nothing to schedule.
+     *
+     * Bounded to the near future. Scheduling an alarm for something due next
+     * year costs nothing but tells us nothing either, and the device can hold
+     * only so many exact alarms.
+     */
+    suspend fun pollPending(): List<Reminder> {
+        val query = "select=id,text,due_at,fired_at" +
+            "&fired_at=is.null" +
+            "&order=due_at.asc" +
+            "&limit=50"
+        return rows(query).filter { it.firedAtMs == null }
+    }
+
+    /**
+     * A thin loop around [pollOnce]. All the behaviour worth testing is in the
+     * two poll functions; this only decides how often.
+     *
+     * Completes when the identity has been revoked. A tablet whose auth user
+     * has been disabled has nothing to ask for, and looping forever on a
+     * short-circuit is how a dead device still looks busy.
+     */
     fun flow(): Flow<List<Reminder>> = flow {
-        while (true) {
+        while (session.state() != SessionState.Revoked) {
             emit(pollOnce())
             delay(intervalMs)
         }

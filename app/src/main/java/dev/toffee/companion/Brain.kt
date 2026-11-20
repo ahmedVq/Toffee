@@ -66,17 +66,59 @@ class Brain(
     }
 
     /**
-     * Reminders came due, by whichever route got here first. Announced one at
-     * a time and marked only after the agent has actually been asked, so a
-     * failure to speak does not quietly consume the reminder.
+     * Reminders came due, by whichever route got here first.
+     *
+     * Marked only when the agent actually answered. An unreachable agent
+     * still produces a Reply — the offline line — and marking on that would
+     * spend the reminder on a generic quip and never offer it again, because
+     * AnnouncedStore is durable. So when the network is gone the reminder
+     * reads out its own text and stays owed until the agent can dress it up.
      */
     suspend fun onReminders(source: ReminderInbox.Source, reminders: List<Reminder>) {
         if (!usable()) return inert()
         for (r in inbox.offer(source, reminders)) {
-            ask { agent.event("reminder_due", mapOf("id" to r.id, "text" to r.text)) }
+            val reply = speaking.withLock {
+                agent.event("reminder_due", mapOf("id" to r.id, "text" to r.text))
+            }
+            // A reminder always reads out its own words.
+            //
+            // Relying on the agent for them fails two ways, and both were
+            // seen on the device: with no network the canned offline line
+            // says nothing about the reminder, and when the model is
+            // unavailable the backend still answers 200 with "my brain's out
+            // of juice" — a successful call that delivers nothing. Either
+            // way the reminder was marked announced and its text was never
+            // read. A reminder you cannot trust is worse than no reminder.
+            show(Reply(captionFor(r, reply), moodFor(reply)))
             inbox.markAnnounced(r.id)
         }
     }
+
+    /**
+     * Re-read the session and go inert if it has been revoked.
+     *
+     * Nothing else watches it: every other path here runs because something
+     * happened, and a revoked tablet is precisely one where nothing happens
+     * any more. Without this it kept whatever expression it last wore, for
+     * ever, giving no sign it was dead.
+     */
+    fun refreshSessionState() {
+        if (!usable()) inert()
+    }
+
+    /** The reminder's own words, with the agent's remark after them when it
+     *  managed one that does not already contain them. */
+    private fun captionFor(r: Reminder, reply: Reply): String {
+        val spoken = reply.speak?.takeIf { !reply.offline }?.trim()
+        return when {
+            spoken.isNullOrEmpty() -> r.text
+            spoken.contains(r.text, ignoreCase = true) -> spoken
+            else -> listOf(r.text, spoken).joinToString(separator = NEWLINE)
+        }
+    }
+
+    private fun moodFor(reply: Reply): Mood =
+        if (reply.offline || reply.mood == Mood.NEUTRAL) Mood.FRUSTRATED else reply.mood
 
     private fun usable(): Boolean = sessionState() == SessionState.Active
 
@@ -93,11 +135,10 @@ class Brain(
 
     private suspend fun ask(call: suspend () -> Reply) {
         if (!usable()) return inert()
-        val reply = speaking.withLock { call() }
-        apply(reply)
+        show(speaking.withLock { call() })
     }
 
-    private fun apply(reply: Reply) {
+    private fun show(reply: Reply) {
         val line = reply.speak
         if (line == null) {
             // The governor decided silence. A mood it chose not to express is
@@ -119,5 +160,8 @@ class Brain(
         /** Long enough to read across a desk, short enough that the panel is
          *  not showing yesterday's nag at breakfast. */
         const val LINE_TTL_MS = 20_000L
+
+        /** Written as a code point so no editing pass can mangle the escape. */
+        private val NEWLINE: String = 10.toChar().toString()
     }
 }

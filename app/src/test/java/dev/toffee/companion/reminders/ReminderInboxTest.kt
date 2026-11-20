@@ -4,6 +4,7 @@ import dev.toffee.companion.reminders.ReminderInbox.Source.ALARM
 import dev.toffee.companion.reminders.ReminderInbox.Source.POLL
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.Test
 
@@ -17,8 +18,8 @@ class ReminderInboxTest {
 
     private class MemoryAnnounced : AnnouncedStore {
         val ids = mutableSetOf<String>()
-        override fun contains(id: String) = id in ids
-        override fun add(id: String) { ids += id }
+        override suspend fun contains(id: String) = id in ids
+        override suspend fun add(id: String) { ids += id }
     }
 
     private lateinit var store: MemoryAnnounced
@@ -38,7 +39,7 @@ class ReminderInboxTest {
     }
 
     @Test
-    fun `the same reminder from both sources is announced once`() {
+    fun `the same reminder from both sources is announced once`() = runBlocking {
         val r = reminder("abc")
 
         assertEquals(listOf(r), inbox.offer(POLL, listOf(r)))
@@ -52,7 +53,7 @@ class ReminderInboxTest {
     }
 
     @Test
-    fun `the alarm wins when it arrives first`() {
+    fun `the alarm wins when it arrives first`() = runBlocking {
         val r = reminder("abc")
 
         assertEquals(listOf(r), inbox.offer(ALARM, listOf(r)))
@@ -62,7 +63,7 @@ class ReminderInboxTest {
     }
 
     @Test
-    fun `an announced reminder stays announced across a restart`() {
+    fun `an announced reminder stays announced across a restart`() = runBlocking {
         inbox.offer(POLL, listOf(reminder("abc")))
         inbox.markAnnounced("abc")
 
@@ -76,14 +77,14 @@ class ReminderInboxTest {
     }
 
     @Test
-    fun `two different reminders are both announced`() {
+    fun `two different reminders are both announced`() = runBlocking {
         val a = reminder("a")
         val b = reminder("b")
         assertEquals(listOf(a, b), inbox.offer(POLL, listOf(a, b)))
     }
 
     @Test
-    fun `offering twice before marking still returns it`() {
+    fun `offering twice before marking still returns it`() = runBlocking {
         // Offering is "here is what came due"; marking is the app saying it
         // actually spoke. Losing the gap between them loses the reminder
         // whenever speaking fails.
@@ -96,25 +97,25 @@ class ReminderInboxTest {
     // pauses, a router dies, and the reminder must fire late rather than
     // vanish. The tablet must not reintroduce the bound the server avoided.
     @Test
-    fun `a reminder that fired four hours ago is still announced`() {
+    fun `a reminder that fired four hours ago is still announced`() = runBlocking {
         val old = reminder("stale", firedMinutesAgo = 240)
         assertEquals(listOf(old), inbox.offer(POLL, listOf(old)))
     }
 
     @Test
-    fun `a reminder that has not fired is not announced`() {
+    fun `a reminder that has not fired is not announced`() = runBlocking {
         val pending = Reminder("x", "later", NOW + 3_600_000, firedAtMs = null)
         assertEquals(emptyList<Reminder>(), inbox.offer(POLL, listOf(pending)))
     }
 
     @Test
-    fun `marking something never offered is harmless`() {
+    fun `marking something never offered is harmless`() = runBlocking {
         inbox.markAnnounced("never-seen")
         assertTrue(store.contains("never-seen"))
     }
 
     @Test
-    fun `an empty batch announces nothing`() {
+    fun `an empty batch announces nothing`() = runBlocking {
         assertEquals(emptyList<Reminder>(), inbox.offer(POLL, emptyList()))
     }
 

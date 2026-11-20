@@ -51,8 +51,8 @@ class BrainTest {
 
     private class MemoryAnnounced : AnnouncedStore {
         val ids = mutableSetOf<String>()
-        override fun contains(id: String) = id in ids
-        override fun add(id: String) { ids += id }
+        override suspend fun contains(id: String) = id in ids
+        override suspend fun add(id: String) { ids += id }
     }
 
     private fun reminder(id: String) = Reminder(id, "stand up", 0L, 1L)
@@ -214,6 +214,107 @@ class BrainTest {
 
         assertEquals("both reminders must be announced", 2, agent.events.size)
         assertEquals(listOf("r1", "r2"), agent.events.map { it.second["id"] })
+    }
+
+    // Found in review. `ask` never throws — every network failure becomes a
+    // Reply with offline=true — so marking unconditionally meant a reminder
+    // that came due with the router down was spent on a generic quip and
+    // then never offered again, because AnnouncedStore is durable. That is
+    // the spec's named anti-goal reached by the exact route the two-path
+    // design existed to close.
+    @Test
+    fun `an offline reminder still reads out its own words`() = runTest {
+        val agent = FakeAgent().apply {
+            reply = Reply("Offline. For once my silence isn't a judgement.", Mood.OFFLINE, offline = true)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this)
+
+        brain.onReminders(ReminderInbox.Source.ALARM, listOf(reminder("r1")))
+        advanceTimeBy(1_000)
+
+        assertEquals("stand up", brain.state.value.line)
+    }
+
+    // Seen on the device: with the model unavailable the backend answers 200
+    // with "my brain's out of juice". A successful call that delivers
+    // nothing, and the reminder was marked announced and lost.
+    @Test
+    fun `a degraded reply does not swallow the reminder`() = runTest {
+        val agent = FakeAgent().apply {
+            reply = Reply("My brain's out of juice for the moment.", Mood.NEUTRAL)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this)
+
+        brain.onReminders(ReminderInbox.Source.POLL, listOf(reminder("r1")))
+        advanceTimeBy(1_000)
+
+        assertTrue(
+            "the reminder's own words must survive a useless answer: ${brain.state.value.line}",
+            brain.state.value.line!!.contains("stand up"),
+        )
+    }
+
+    @Test
+    fun `an agent that already said it is not repeated`() = runTest {
+        val agent = FakeAgent().apply {
+            reply = Reply("Time to stand up, Ahmed. Your spine is a rumour.", Mood.SMUG)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this)
+
+        brain.onReminders(ReminderInbox.Source.POLL, listOf(reminder("r1")))
+        advanceTimeBy(1_000)
+
+        assertEquals("Time to stand up, Ahmed. Your spine is a rumour.", brain.state.value.line)
+    }
+
+    @Test
+    fun `a delivered reminder is never announced twice`() = runTest {
+        val agent = FakeAgent().apply { reply = Reply("Offline.", Mood.OFFLINE, offline = true) }
+        val store = MemoryAnnounced()
+        val inbox = ReminderInbox(store)
+        val brain = Brain(agent, inbox, { SessionState.Active }, this)
+
+        brain.onReminders(ReminderInbox.Source.ALARM, listOf(reminder("r1")))
+        advanceTimeBy(1_000)
+        brain.onReminders(ReminderInbox.Source.POLL, listOf(reminder("r1")))
+        advanceTimeBy(1_000)
+
+        assertEquals("its words reached him once; that is the promise kept", 1, agent.events.size)
+        assertTrue(store.contains("r1"))
+    }
+
+    // Found in review: nothing watched the session, so a revoked tablet kept
+    // whatever expression it last wore until somebody touched it.
+    @Test
+    fun `revocation reaches the face without anyone touching it`() = runTest {
+        var state: SessionState = SessionState.Active
+        val agent = FakeAgent().apply { reply = Reply("Hello.", Mood.HAPPY) }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { state }, this)
+
+        brain.onArrival()
+        advanceTimeBy(1_000)
+        assertEquals(Mood.HAPPY, brain.state.value.mood)
+
+        state = SessionState.Revoked
+        brain.refreshSessionState()
+        advanceTimeBy(100)
+
+        assertEquals(Mood.OFFLINE, brain.state.value.mood)
+        assertTrue(brain.state.value.line!!.isNotBlank())
+    }
+
+    @Test
+    fun `refreshing an active session changes nothing`() = runTest {
+        val agent = FakeAgent().apply { reply = Reply("Hello.", Mood.HAPPY) }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this)
+
+        brain.onArrival()
+        advanceTimeBy(1_000)
+        brain.refreshSessionState()
+        advanceTimeBy(100)
+
+        assertEquals(Mood.HAPPY, brain.state.value.mood)
+        assertEquals("Hello.", brain.state.value.line)
     }
 
     @Test

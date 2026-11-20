@@ -166,6 +166,58 @@ class ReminderPollerTest {
         assertEquals(null, parseTimestamp(null))
     }
 
+    // Found in review, and it is the whole of Task 5's second route.
+    //
+    // pollOnce only ever returns reminders that have ALREADY fired, so the
+    // only rows the app stored were fired ones, so pendingReminders() was
+    // always empty, so AlarmScheduler.syncFrom scheduled nothing and
+    // ReminderAlarmReceiver could never fire. The offline backstop did not
+    // exist. Nothing caught it because every test that exercised the alarm
+    // route constructed its own Reminder.
+    @Test
+    fun `pending reminders are fetched so alarms can be set for them`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """[{"id":"p1","text":"stand up","due_at":"2026-11-20T12:00:00+00:00","fired_at":null}]""",
+            ),
+        )
+
+        val pending = poller().pollPending()
+
+        assertEquals(1, pending.size)
+        assertEquals("p1", pending[0].id)
+        assertEquals(
+            "an alarm can only be set for something that has not fired",
+            null,
+            pending[0].firedAtMs,
+        )
+
+        val path = server.takeRequest().path!!
+        assertTrue("must ask for unfired rows: $path", path.contains("fired_at=is.null"))
+    }
+
+    @Test
+    fun `a fired reminder is never offered as pending`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """[{"id":"f1","text":"done","due_at":"2026-11-20T12:00:00+00:00","fired_at":"2026-11-20T12:00:00+00:00"}]""",
+            ),
+        )
+        assertEquals(emptyList<Reminder>(), poller().pollPending())
+    }
+
+    @Test
+    fun `a failed pending poll yields nothing rather than throwing`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(500))
+        assertEquals(emptyList<Reminder>(), poller().pollPending())
+    }
+
+    @Test
+    fun `a signed out session does not ask for pending reminders either`() = runBlocking {
+        assertEquals(emptyList<Reminder>(), poller(signedIn = false).pollPending())
+        assertEquals(0, server.requestCount)
+    }
+
     @Test
     fun `the poll interval is short enough to feel immediate`() {
         assertTrue(ReminderPoller.DEFAULT_INTERVAL_MS in 5_000..30_000)

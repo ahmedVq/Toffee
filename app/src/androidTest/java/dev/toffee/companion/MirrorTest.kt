@@ -3,12 +3,16 @@ package dev.toffee.companion
 import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import dev.toffee.companion.reminders.AnnouncedRow
 import dev.toffee.companion.reminders.Mirror
 import dev.toffee.companion.reminders.Reminder
 import dev.toffee.companion.reminders.ReminderInbox
 import dev.toffee.companion.reminders.RoomAnnouncedStore
+import dev.toffee.companion.reminders.pendingOnIo
 import dev.toffee.companion.reminders.toRow
+import dev.toffee.companion.reminders.upsertOnIo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -40,16 +44,38 @@ class MirrorTest {
 
     @Before
     fun setUp() {
-        db = Room.inMemoryDatabaseBuilder(context, Mirror::class.java)
-            .allowMainThreadQueries()
-            .build()
+        // Deliberately WITHOUT allowMainThreadQueries. The production
+        // database does not allow it either, and the test having granted
+        // itself the permission is why nobody noticed that every DAO call in
+        // the app ran on the main thread and threw.
+        db = Room.inMemoryDatabaseBuilder(context, Mirror::class.java).build()
     }
 
     @After
     fun tearDown() = db.close()
 
+    // The C2 regression guard: this is exactly the call the first reminder
+    // of the day makes, from exactly the dispatcher it makes it on.
     @Test
-    fun announcedSurvivesANewInboxOverTheSameDatabase() {
+    fun theAnnouncedStoreIsSafeToCallFromTheMainThread() = runBlocking {
+        val store = RoomAnnouncedStore(db.dao())
+        withContext(Dispatchers.Main) {
+            store.add("main-thread")
+            assertTrue(store.contains("main-thread"))
+        }
+    }
+
+    @Test
+    fun reminderRowsAreSafeToWriteFromTheMainThread() = runBlocking {
+        val dao = db.dao()
+        withContext(Dispatchers.Main) {
+            dao.upsertOnIo(listOf(reminder("m1", fired = false, dueInMs = 600_000).toRow()))
+            assertEquals(1, dao.pendingOnIo().size)
+        }
+    }
+
+    @Test
+    fun announcedSurvivesANewInboxOverTheSameDatabase() = runBlocking {
         val store = RoomAnnouncedStore(db.dao())
         val inbox = ReminderInbox(store)
         val r = reminder("abc")
@@ -67,48 +93,52 @@ class MirrorTest {
     }
 
     @Test
-    fun markingTheSameIdTwiceIsHarmless() {
-        val dao = db.dao()
-        dao.markAnnounced(AnnouncedRow("abc"))
-        dao.markAnnounced(AnnouncedRow("abc"))
-        assertEquals(1, dao.announcedCount("abc"))
+    fun markingTheSameIdTwiceIsHarmless() = runBlocking {
+        val store = RoomAnnouncedStore(db.dao())
+        store.add("abc")
+        store.add("abc")
+        assertTrue(store.contains("abc"))
     }
 
     @Test
-    fun pendingRemindersAreTheOnesTheAlarmNeeds() {
+    fun pendingRemindersAreTheOnesTheAlarmNeeds() = runBlocking {
         val dao = db.dao()
-        dao.upsertReminders(
+        dao.upsertOnIo(
             listOf(
                 reminder("fired", fired = true).toRow(),
                 reminder("pending", fired = false, dueInMs = 600_000).toRow(),
             ),
         )
 
-        val pending = dao.pendingReminders()
+        val pending = dao.pendingOnIo()
         assertEquals(1, pending.size)
         assertEquals("pending", pending[0].id)
         assertNull("a fired reminder needs no alarm", pending[0].firedAtMs)
     }
 
     @Test
-    fun upsertReplacesRatherThanDuplicating() {
+    fun upsertReplacesRatherThanDuplicating() = runBlocking {
         val dao = db.dao()
-        dao.upsertReminders(listOf(reminder("abc", fired = false, dueInMs = 600_000).toRow()))
-        dao.upsertReminders(listOf(reminder("abc", fired = true).toRow()))
+        dao.upsertOnIo(listOf(reminder("abc", fired = false, dueInMs = 600_000).toRow()))
+        dao.upsertOnIo(listOf(reminder("abc", fired = true).toRow()))
 
-        assertEquals(0, dao.pendingReminders().size)
-        assertTrue("the row must still be there, just updated", dao.reminder("abc") != null)
+        assertEquals(0, dao.pendingOnIo().size)
+        assertTrue(
+            "the row must still be there, just updated",
+            withContext(Dispatchers.IO) { dao.reminder("abc") } != null,
+        )
     }
 
     @Test
-    fun oldFiredRemindersAreForgotten() {
+    fun oldFiredRemindersAreForgotten() = runBlocking {
         val dao = db.dao()
         val ancient = Reminder("old", "old", 1_000L, 1_000L)
-        dao.upsertReminders(listOf(ancient.toRow(), reminder("recent").toRow()))
+        dao.upsertOnIo(listOf(ancient.toRow(), reminder("recent").toRow()))
 
-        dao.forgetFiredBefore(System.currentTimeMillis() - 86_400_000)
-
-        assertNull("a reminder from the epoch is not worth keeping", dao.reminder("old"))
-        assertTrue(dao.reminder("recent") != null)
+        withContext(Dispatchers.IO) {
+            dao.forgetFiredBefore(System.currentTimeMillis() - 86_400_000)
+            assertNull("a reminder from the epoch is not worth keeping", dao.reminder("old"))
+            assertTrue(dao.reminder("recent") != null)
+        }
     }
 }

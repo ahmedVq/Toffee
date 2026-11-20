@@ -30,8 +30,9 @@ import dev.toffee.companion.reminders.ReminderAlarmReceiver
 import dev.toffee.companion.reminders.ReminderInbox
 import dev.toffee.companion.reminders.ReminderPoller
 import dev.toffee.companion.reminders.RoomAnnouncedStore
-import dev.toffee.companion.reminders.toReminder
+import dev.toffee.companion.reminders.pendingOnIo
 import dev.toffee.companion.reminders.toRow
+import dev.toffee.companion.reminders.upsertOnIo
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.time.ZoneId
@@ -54,6 +55,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var caption: TextView
     private lateinit var brain: Brain
     private lateinit var session: Session
+
+    private val ui = Handler(Looper.getMainLooper())
+    private var brightnessTick: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,6 +114,19 @@ class MainActivity : AppCompatActivity() {
         brain = Brain(client, inbox, session::state, lifecycleScope)
 
         render()
+
+        // `-e mood smug` paints one mood and stops. The face has no unit
+        // tests by design — everything it draws is a pure function that does
+        // — so scripts/face-shots.sh is its only instrument, and Task 7
+        // silently broke it by dropping this extra.
+        val forced = intent?.getStringExtra("mood")
+        if (forced != null) {
+            face.mood = Mood.parse(forced)
+            caption.text = forced
+            caption.setTextColor(Palette.eyeColor(Mood.parse(forced)))
+            return
+        }
+
         lifecycleScope.launch { brain.onArrival() }
         startPolling(dao)
         listenForAlarms()
@@ -120,6 +137,11 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         ReminderAlarmReceiver.listener = null
+        // A self-reposting Runnable holding the Activity outlives finish()
+        // otherwise — and on the signed-out path this Activity finishes
+        // immediately, so it would have leaked every launch.
+        brightnessTick?.let { ui.removeCallbacks(it) }
+        brightnessTick = null
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -148,14 +170,26 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             poller.flow().collect { fired ->
+                // A revoked identity reaches the face here, not only when
+                // something happens to call Brain — which, on a dead tablet,
+                // is never.
+                brain.refreshSessionState()
+
                 if (fired.isNotEmpty()) {
-                    runCatching { dao.upsertReminders(fired.map { it.toRow() }) }
+                    dao.upsertOnIo(fired.map { it.toRow() })
                     brain.onReminders(ReminderInbox.Source.POLL, fired)
                 }
-                // Keep the offline route in step with the server, so a
-                // reminder set today still fires tomorrow with no network.
-                runCatching { alarms.syncFrom(dao.pendingReminders().map { it.toReminder() }) }
+
+                // The offline backstop. Reminders that have NOT fired are
+                // what alarms are set for, so they must be fetched too — and
+                // for a while they were not, which left the second route
+                // scheduling nothing at all.
+                val pending = poller.pollPending()
+                if (pending.isNotEmpty()) dao.upsertOnIo(pending.map { it.toRow() })
+                alarms.syncFrom(dao.pendingOnIo())
             }
+            // The flow completes only when the identity is gone.
+            brain.refreshSessionState()
         }
     }
 
@@ -170,16 +204,31 @@ class MainActivity : AppCompatActivity() {
 
     /** Hold the top-left corner for five seconds. The only way back in once
      *  Device Owner removes Settings and the launcher. */
+    private fun isATap(
+        event: MotionEvent,
+        downXDp: Float,
+        downYDp: Float,
+        downAtMs: Long,
+        density: Float,
+    ): Boolean {
+        val movedDp = kotlin.math.hypot(
+            event.x / density - downXDp,
+            event.y / density - downYDp,
+        )
+        return movedDp < TAP_SLOP_DP && event.eventTime - downAtMs < TAP_MAX_MS
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun wireMaintenanceGate() {
-        val handler = Handler(Looper.getMainLooper())
         var downAt = 0L
         var downX = 0f
         var downY = 0f
+        var openedMaintenance = false
         val density = resources.displayMetrics.density
 
         val open = Runnable {
             if (CornerHold.held(downX, downY, downAt, downAt + CornerHold.HOLD_MS)) {
+                openedMaintenance = true
                 startActivity(Intent(this, MaintenanceActivity::class.java))
             }
         }
@@ -191,14 +240,20 @@ class MainActivity : AppCompatActivity() {
                     downX = event.x / density
                     downY = event.y / density
                     if (downX <= CornerHold.BOX_DP && downY <= CornerHold.BOX_DP) {
-                        handler.postDelayed(open, CornerHold.HOLD_MS)
+                        ui.postDelayed(open, CornerHold.HOLD_MS)
                     }
                 }
                 MotionEvent.ACTION_UP -> {
-                    handler.removeCallbacks(open)
-                    v.performClick()
+                    ui.removeCallbacks(open)
+                    // Only a real tap talks. Without this a five-second
+                    // corner hold opened Maintenance AND fired a /turn, and
+                    // so did any swipe across the face.
+                    if (!openedMaintenance && isATap(event, downX, downY, downAt, density)) {
+                        v.performClick()
+                    }
+                    openedMaintenance = false
                 }
-                MotionEvent.ACTION_CANCEL -> handler.removeCallbacks(open)
+                MotionEvent.ACTION_CANCEL -> ui.removeCallbacks(open)
             }
             true
         }
@@ -207,7 +262,6 @@ class MainActivity : AppCompatActivity() {
     /** Presence arrives in Plan 3; until then the policy is driven by the
      *  clock alone, which is what makes it stop glowing at 3am. */
     private fun startBrightnessTicker() {
-        val handler = Handler(Looper.getMainLooper())
         val tick = object : Runnable {
             override fun run() {
                 val now = System.currentTimeMillis()
@@ -220,10 +274,11 @@ class MainActivity : AppCompatActivity() {
                         localHour = ZonedDateTime.now(ZoneId.of(TIMEZONE)).hour,
                     ),
                 )
-                handler.postDelayed(this, 60_000)
+                ui.postDelayed(this, 60_000)
             }
         }
-        handler.post(tick)
+        brightnessTick = tick
+        ui.post(tick)
     }
 
     private companion object {
@@ -232,5 +287,9 @@ class MainActivity : AppCompatActivity() {
         /** Standing in for speech until Plan 3 brings the microphone. A tap
          *  is Ahmed asking for attention, so this is what that means. */
         const val TAP_PROMPT = "I tapped you. What should I be doing?"
+
+        /** A tap is a tap; a drag or a long hold is not. */
+        const val TAP_SLOP_DP = 24f
+        const val TAP_MAX_MS = 700L
     }
 }

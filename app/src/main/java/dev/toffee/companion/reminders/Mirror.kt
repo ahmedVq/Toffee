@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * The local mirror.
@@ -75,12 +77,31 @@ abstract class Mirror : RoomDatabase() {
     }
 }
 
-/** The durable half of [ReminderInbox]. Thin on purpose: every decision about
- *  what counts as announced lives in the inbox, which is tested. */
+/**
+ * The durable half of [ReminderInbox]. Thin on purpose: every decision about
+ * what counts as announced lives in the inbox, which is tested.
+ *
+ * Everything goes through Dispatchers.IO. Room refuses main-thread access,
+ * and this is reached from a coroutine started on the main thread the moment
+ * a reminder arrives — so without this the first reminder of the day threw an
+ * uncaught IllegalStateException and took the process with it. The app is the
+ * HOME activity, so Android restarted it, and twenty seconds later the same
+ * reminder did it again.
+ */
 class RoomAnnouncedStore(private val dao: MirrorDao) : AnnouncedStore {
-    override fun contains(id: String): Boolean = dao.announcedCount(id) > 0
-    override fun add(id: String) = dao.markAnnounced(AnnouncedRow(id))
+    override suspend fun contains(id: String): Boolean =
+        withContext(Dispatchers.IO) { dao.announcedCount(id) > 0 }
+
+    override suspend fun add(id: String) =
+        withContext(Dispatchers.IO) { dao.markAnnounced(AnnouncedRow(id)) }
 }
+
+/** The same guarantee for the reminder rows themselves. */
+suspend fun MirrorDao.upsertOnIo(rows: List<ReminderRow>) =
+    withContext(Dispatchers.IO) { upsertReminders(rows) }
+
+suspend fun MirrorDao.pendingOnIo(): List<Reminder> =
+    withContext(Dispatchers.IO) { pendingReminders().map { it.toReminder() } }
 
 fun Reminder.toRow() = ReminderRow(id, text, dueAtMs, firedAtMs)
 fun ReminderRow.toReminder() = Reminder(id, text, dueAtMs, firedAtMs)

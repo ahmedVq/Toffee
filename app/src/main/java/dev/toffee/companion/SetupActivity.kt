@@ -17,6 +17,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import dev.toffee.companion.net.KeystoreTokenStore
 import dev.toffee.companion.net.Session
+import dev.toffee.companion.kiosk.PinStore
 import dev.toffee.companion.net.ToffeeHttp
 import kotlinx.coroutines.launch
 
@@ -31,6 +32,19 @@ import kotlinx.coroutines.launch
  * sessions is in [Session], which is tested.
  */
 class SetupActivity : AppCompatActivity() {
+
+    /** Samsung's keyboard sends IME_ACTION_UNSPECIFIED with a raw ENTER
+     *  KeyEvent rather than the DONE action it was asked for, so matching on
+     *  DONE alone left the button — which the keyboard covers — as the only
+     *  way to sign in. */
+    private fun isGo(action: Int, event: KeyEvent?): Boolean =
+        action == EditorInfo.IME_ACTION_DONE ||
+            action == EditorInfo.IME_ACTION_GO ||
+            action == EditorInfo.IME_ACTION_SEND ||
+            (
+                event != null && event.keyCode == KeyEvent.KEYCODE_ENTER &&
+                    event.action == KeyEvent.ACTION_DOWN
+                )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,9 +79,14 @@ class SetupActivity : AppCompatActivity() {
             // on a screen someone is holding up in an office.
             setSingleLine()
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            // The soft keyboard covers the button on a 1200px-tall panel, and
-            // this screen is used once by someone holding a password they
-            // cannot retype from memory. Done submits.
+            imeOptions = EditorInfo.IME_ACTION_NEXT
+        }
+        val maintenancePin = EditText(this).apply {
+            hint = "4-8 digits"
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#48484A"))
+            setSingleLine()
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
             imeOptions = EditorInfo.IME_ACTION_DONE
         }
         val status = TextView(this).apply {
@@ -93,6 +112,7 @@ class SetupActivity : AppCompatActivity() {
             isAllCaps = false
         }
 
+        val pins = PinStore(this)
         val store = KeystoreTokenStore(applicationContext)
         val session = Session(
             http = ToffeeHttp.client(),
@@ -101,24 +121,27 @@ class SetupActivity : AppCompatActivity() {
             store = store,
         )
 
-        // Samsung's keyboard sends IME_ACTION_UNSPECIFIED with a raw ENTER
-        // KeyEvent rather than the DONE action it was asked for, so matching
-        // on DONE alone meant the button — which the keyboard covers — was
-        // the only way to sign in. Accept anything that means "go".
+        maintenancePin.setOnEditorActionListener { _, action, event ->
+            if (isGo(action, event)) { signIn.performClick(); true } else false
+        }
+
         password.setOnEditorActionListener { _, action, event ->
-            val go = action == EditorInfo.IME_ACTION_DONE ||
-                action == EditorInfo.IME_ACTION_GO ||
-                action == EditorInfo.IME_ACTION_SEND ||
-                (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER &&
-                    event.action == KeyEvent.ACTION_DOWN)
-            if (go) { signIn.performClick(); true } else false
+            if (isGo(action, event)) { signIn.performClick(); true } else false
         }
 
         signIn.setOnClickListener {
             val e = email.text.toString().trim()
             val p = password.text.toString()
+            val pin = maintenancePin.text.toString()
             if (e.isEmpty() || p.isEmpty()) {
                 status.text = "Both, please."
+                return@setOnClickListener
+            }
+            // The maintenance PIN is the way out of the kiosk, so it is set
+            // here, by whoever has the identity — not by whoever reaches the
+            // hidden corner first.
+            if (!pins.isSet() && pin.length !in 4..8) {
+                status.text = "Set a maintenance PIN too: 4 to 8 digits. It is the way back in."
                 return@setOnClickListener
             }
             signIn.isEnabled = false
@@ -127,6 +150,7 @@ class SetupActivity : AppCompatActivity() {
                 val result = session.signIn(e, p)
                 signIn.isEnabled = true
                 if (result.isSuccess) {
+                    if (pin.length in 4..8) pins.set(pin)
                     startActivity(Intent(this@SetupActivity, MainActivity::class.java))
                     finish()
                 } else {
@@ -139,7 +163,14 @@ class SetupActivity : AppCompatActivity() {
             }
         }
 
-        for (v in listOf(title, subtitle, status, label("Identity"), email, label("Password"), password, signIn)) {
+        val fields = listOf(
+            title, subtitle, status,
+            label("Identity"), email,
+            label("Password"), password,
+            label("Maintenance PIN"), maintenancePin,
+            signIn,
+        )
+        for (v in fields) {
             root.addView(
                 v,
                 LinearLayout.LayoutParams(
