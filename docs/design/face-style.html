@@ -1,0 +1,223 @@
+<style>
+  .cf-wrap { --ink: #e8e8ea; }
+
+  .cf-stage {
+    background: #050507;
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,.08);
+    height: 230px;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* the glow the whole face sits in — this is where mood colour lives */
+  .cf-stage::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(42% 46% at 50% 50%, var(--mood, #4fd4e4) 0%, transparent 72%);
+    opacity: .16;
+    transition: background 1s ease, opacity 1s ease;
+  }
+
+  .cf-face { display: flex; gap: 46px; align-items: center; position: relative; z-index: 1; }
+
+  /* ---------------------------------------------- A: pill eyes */
+  .cf-pill {
+    width: 46px; height: 104px; border-radius: 24px;
+    background: var(--mood, #4fd4e4);
+    box-shadow: 0 0 26px var(--mood, #4fd4e4), 0 0 70px var(--mood, #4fd4e4);
+    transform-origin: center;
+    animation: cf-wake 1.9s cubic-bezier(.2,.9,.25,1) both, cf-blinkA 5.4s 2.1s infinite;
+  }
+  .cf-pill.r { animation-delay: .12s, 2.5s; }
+
+  @keyframes cf-wake {
+    0%   { transform: scaleY(.025); filter: brightness(.35); }
+    42%  { transform: scaleY(.025); filter: brightness(.35); }
+    58%  { transform: scaleY(1.06); filter: brightness(1.25); }
+    72%  { transform: scaleY(.88); }
+    100% { transform: scaleY(1); filter: brightness(1); }
+  }
+  @keyframes cf-blinkA {
+    0%, 92%, 100% { transform: scaleY(1); }
+    95%           { transform: scaleY(.06); }
+  }
+
+  /* ---------------------------------------------- B: round eyes with lids */
+  .cf-round {
+    width: 94px; height: 94px; border-radius: 50%;
+    background: var(--mood, #4fd4e4);
+    box-shadow: 0 0 26px var(--mood, #4fd4e4), 0 0 70px var(--mood, #4fd4e4);
+    position: relative; overflow: hidden;
+    animation: cf-wakeB 2s cubic-bezier(.2,.9,.25,1) both;
+  }
+  .cf-round::before {           /* the eyelid */
+    content: "";
+    position: absolute; left: -4px; right: -4px; top: -4px;
+    height: 104px; background: #050507;
+    border-radius: 0 0 50% 50%;
+    transform: translateY(-100%);
+    animation: cf-lid 5.8s 2.2s infinite;
+  }
+  .cf-round.r::before { animation-delay: 2.45s; }
+  .cf-round::after {            /* a highlight, so it reads as an eye not a dot */
+    content: "";
+    position: absolute; top: 17%; left: 20%;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: rgba(255,255,255,.5);
+  }
+  @keyframes cf-wakeB {
+    0%, 42% { transform: scale(.1); filter: brightness(.3); }
+    60%     { transform: scale(1.08); filter: brightness(1.2); }
+    100%    { transform: scale(1); filter: brightness(1); }
+  }
+  @keyframes cf-lid {
+    0%, 92%, 100% { transform: translateY(-100%); }
+    95%           { transform: translateY(-2%); }
+  }
+
+  /* ---------------------------------------------- C: stroke arcs */
+  .cf-arc {
+    width: 92px; height: 62px;
+    border: 11px solid var(--mood, #4fd4e4);
+    border-bottom: none;
+    border-radius: 60px 60px 0 0;
+    filter: drop-shadow(0 0 16px var(--mood, #4fd4e4));
+    transform-origin: center bottom;
+    animation: cf-wakeC 2s cubic-bezier(.2,.9,.25,1) both, cf-blinkC 6.2s 2.3s infinite;
+  }
+  .cf-arc.r { animation-delay: .1s, 2.7s; }
+  @keyframes cf-wakeC {
+    0%, 42% { transform: scaleY(.04); opacity: .35; }
+    62%     { transform: scaleY(1.1); opacity: 1; }
+    100%    { transform: scaleY(1); opacity: 1; }
+  }
+  @keyframes cf-blinkC {
+    0%, 93%, 100% { transform: scaleY(1); }
+    96%           { transform: scaleY(.08); }
+  }
+
+  /* ---------------------------------------------- mood strip */
+  .cf-moods {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 10px;
+  }
+  .cf-mood-cell {
+    background: #050507; border: 1px solid rgba(255,255,255,.08);
+    border-radius: 14px; padding: 20px 8px 12px;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    position: relative; overflow: hidden;
+  }
+  .cf-mood-cell::after {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(50% 50% at 50% 42%, var(--mood) 0%, transparent 70%);
+    opacity: .17;
+  }
+  .cf-eyes-sm { display: flex; gap: 20px; position: relative; z-index: 1; height: 56px; align-items: center; }
+  .cf-eye-sm {
+    width: 22px; height: 50px; border-radius: 12px;
+    background: var(--mood);
+    box-shadow: 0 0 14px var(--mood), 0 0 34px var(--mood);
+    animation: cf-blinkA 5s infinite;
+  }
+  .cf-eye-sm.r { animation-delay: .3s; }
+  .cf-mood-name { font-size: 12px; color: var(--ink); opacity: .75; position: relative; z-index: 1; }
+
+  /* mood shape variations — shape does as much work as colour */
+  .happy      .cf-eye-sm { height: 26px; border-radius: 12px 12px 3px 3px; margin-top: -6px; }
+  .sad        .cf-eye-sm { height: 30px; border-radius: 3px 3px 12px 12px; margin-top: 10px; }
+  .frustrated .cf-eye-sm { height: 18px; border-radius: 4px; }
+  .frustrated .cf-eye-sm:first-child { transform: rotate(14deg); }
+  .frustrated .cf-eye-sm.r           { transform: rotate(-14deg); }
+  .loving     .cf-eye-sm { height: 24px; border-radius: 12px 12px 2px 2px; }
+  .sleepy     .cf-eye-sm { height: 8px;  border-radius: 4px; opacity: .65; }
+  .smug       .cf-eye-sm { height: 20px; border-radius: 3px 3px 11px 11px; }
+  .smug       .cf-eye-sm:first-child { height: 34px; }
+
+  .cf-note { font-size: 13px; color: var(--ink); opacity: .55; margin-top: 8px; }
+  .cf-replay {
+    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14);
+    color: var(--ink); border-radius: 10px; padding: 9px 16px;
+    font: inherit; font-size: 13px; cursor: pointer; margin-top: 4px;
+  }
+</style>
+
+<div class="cf-wrap">
+
+<h2>Which eyes should it have?</h2>
+<p class="subtitle">All three wake the same way — shut, then opening. Watch for a few seconds and they'll blink on their own. Click the one that feels right.</p>
+
+<div class="cards" id="cfCards">
+  <div class="card" data-choice="pill" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0">
+      <div class="cf-stage" style="--mood:#4fd4e4">
+        <div class="cf-face">
+          <div class="cf-pill"></div><div class="cf-pill r"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Pills</h3>
+      <p>Tall rounded bars. The most readable across a room, and the easiest to bend into moods: squash them to squint, round the tops to smile.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="round" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0">
+      <div class="cf-stage" style="--mood:#7aa8ff">
+        <div class="cf-face">
+          <div class="cf-round"></div><div class="cf-round r"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Round, with lids</h3>
+      <p>Circles with a real eyelid dropping over them. The most creaturely of the three — it reads as something alive rather than a device.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="arc" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0">
+      <div class="cf-stage" style="--mood:#b58cff">
+        <div class="cf-face">
+          <div class="cf-arc"></div><div class="cf-arc r"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Strokes</h3>
+      <p>Two thin arcs, barely there. Coolest and most restrained, but it has the least range — hard to look genuinely hurt with only a line.</p>
+    </div>
+  </div>
+</div>
+
+<button class="cf-replay" onclick="cfReplay()">Replay the wake-up</button>
+
+<div class="section" style="margin-top:30px">
+  <h3>And the moods</h3>
+  <p class="subtitle">Shown in style A. Colour sets the temperature, but the eye <em>shape</em> does most of the work — colour alone can't tell sad from sleepy.</p>
+
+  <div class="cf-moods">
+    <div class="cf-mood-cell happy"      style="--mood:#4ad96b"><div class="cf-eyes-sm"><div class="cf-eye-sm"></div><div class="cf-eye-sm r"></div></div><span class="cf-mood-name">Happy</span></div>
+    <div class="cf-mood-cell sad"        style="--mood:#5b8dd6"><div class="cf-eyes-sm"><div class="cf-eye-sm"></div><div class="cf-eye-sm r"></div></div><span class="cf-mood-name">Sad</span></div>
+    <div class="cf-mood-cell frustrated" style="--mood:#ff7043"><div class="cf-eyes-sm"><div class="cf-eye-sm"></div><div class="cf-eye-sm r"></div></div><span class="cf-mood-name">Frustrated</span></div>
+    <div class="cf-mood-cell loving"     style="--mood:#ff6fae"><div class="cf-eyes-sm"><div class="cf-eye-sm"></div><div class="cf-eye-sm r"></div></div><span class="cf-mood-name">Loving</span></div>
+    <div class="cf-mood-cell smug"       style="--mood:#e8b63c"><div class="cf-eyes-sm"><div class="cf-eye-sm"></div><div class="cf-eye-sm r"></div></div><span class="cf-mood-name">Smug</span></div>
+    <div class="cf-mood-cell sleepy"     style="--mood:#8a7fd4"><div class="cf-eyes-sm"><div class="cf-eye-sm"></div><div class="cf-eye-sm r"></div></div><span class="cf-mood-name">Sleepy</span></div>
+  </div>
+
+  <p class="cf-note">Smug isn't on your list, but a thing this unkind will need it more than most.</p>
+</div>
+
+</div>
+
+<script>
+  function cfReplay() {
+    document.querySelectorAll(".cf-pill, .cf-round, .cf-arc").forEach(el => {
+      const a = el.style.animation;
+      el.style.animation = "none";
+      void el.offsetWidth;
+      el.style.animation = "";
+    });
+  }
+</script>

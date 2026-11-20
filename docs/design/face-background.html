@@ -1,0 +1,147 @@
+<style>
+  .bg-wrap { --ink: #e8e8ea; }
+  .bg-wrap .cards { grid-template-columns: 1fr !important; }
+
+  .bg-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
+
+  .bg-stage {
+    height: 186px;
+    display: flex; align-items: center; justify-content: center;
+    position: relative; overflow: hidden;
+    background: var(--bg);
+    transition: background .8s ease;
+  }
+  /* every option gets the same vignette: the face sits in a pool of its own light */
+  .bg-stage::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(38% 44% at 50% 50%, var(--mood) 0%, transparent 70%);
+    opacity: .13;
+  }
+
+  .bg-eyes { display: flex; gap: 34px; position: relative; z-index: 1; }
+  .bg-eye {
+    width: 34px; height: 78px; border-radius: 18px;
+    background: var(--mood);
+    box-shadow: 0 0 20px var(--mood), 0 0 54px var(--mood);
+    animation: bg-blink 5.2s infinite;
+  }
+  .bg-eye.r { animation-delay: .34s; }
+  @keyframes bg-blink {
+    0%, 92%, 100% { transform: scaleY(1); }
+    95%           { transform: scaleY(.07); }
+  }
+
+  .bg-tag {
+    position: absolute; left: 12px; bottom: 10px; z-index: 2;
+    font-size: 11px; letter-spacing: .04em;
+    color: var(--ink); opacity: .4;
+  }
+
+  .bg-swatches { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
+  .bg-sw { width: 26px; height: 16px; border-radius: 4px; border: 1px solid rgba(255,255,255,.1); }
+  .bg-note { font-size: 13px; opacity: .55; color: var(--ink); margin-top: 6px; }
+</style>
+
+<div class="bg-wrap">
+
+<h2>How dark, and what colour?</h2>
+<p class="subtitle">Pills, as you picked. Each row is one rule for the background, shown at three moods — happy, frustrated, loving — because the real test is whether it still works when the face turns angry. Click a row.</p>
+
+<div class="cards">
+
+  <!-- ============ A: tonal ============ -->
+  <div class="card" data-choice="tonal" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0">
+      <div class="bg-strip">
+        <div class="bg-stage" style="--mood:#4ad96b; --bg:#0b1a0f">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">happy</span>
+        </div>
+        <div class="bg-stage" style="--mood:#ff7043; --bg:#1d0e08">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">frustrated</span>
+        </div>
+        <div class="bg-stage" style="--mood:#ff6fae; --bg:#1d0b13">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">loving</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Tonal: a deep version of the eye colour</h3>
+      <p>The background is the same hue as the eyes, dropped to about 8% lightness. The whole panel bathes in the mood. Warmest and most alive, and the mood reads instantly from across the room even if you can't make out the eye shape.</p>
+      <div class="bg-swatches">
+        <span class="bg-sw" style="background:#0b1a0f"></span>
+        <span class="bg-sw" style="background:#1d0e08"></span>
+        <span class="bg-sw" style="background:#1d0b13"></span>
+        <span class="bg-note">background shifts with mood</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ B: complement ============ -->
+  <div class="card" data-choice="complement" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0">
+      <div class="bg-strip">
+        <div class="bg-stage" style="--mood:#4ad96b; --bg:#190a17">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">happy</span>
+        </div>
+        <div class="bg-stage" style="--mood:#ff7043; --bg:#06181d">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">frustrated</span>
+        </div>
+        <div class="bg-stage" style="--mood:#ff6fae; --bg:#07190d">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">loving</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — True complement: the opposite hue</h3>
+      <p>Literally across the colour wheel — green eyes on deep plum, orange on deep teal. Maximum separation, so the eyes pop hardest. But it's a graphic poster look rather than a creature in a dim room, and the eye colour stops feeling like it's lighting anything.</p>
+      <div class="bg-swatches">
+        <span class="bg-sw" style="background:#190a17"></span>
+        <span class="bg-sw" style="background:#06181d"></span>
+        <span class="bg-sw" style="background:#07190d"></span>
+        <span class="bg-note">background opposes mood</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ C: constant charcoal ============ -->
+  <div class="card" data-choice="charcoal" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0">
+      <div class="bg-strip">
+        <div class="bg-stage" style="--mood:#4ad96b; --bg:#15141a">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">happy</span>
+        </div>
+        <div class="bg-stage" style="--mood:#ff7043; --bg:#15141a">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">frustrated</span>
+        </div>
+        <div class="bg-stage" style="--mood:#ff6fae; --bg:#15141a">
+          <div class="bg-eyes"><div class="bg-eye"></div><div class="bg-eye r"></div></div>
+          <span class="bg-tag">loving</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — One warm charcoal, always</h3>
+      <p>Not black, but a fixed near-neutral with a little warmth in it. Only the glow changes. Safest and most product-like — and the least expressive, since it gives up the "whole face changes colour" idea you asked for.</p>
+      <div class="bg-swatches">
+        <span class="bg-sw" style="background:#15141a"></span>
+        <span class="bg-note">background never changes</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="bg-note" style="margin-top:18px">
+  I'd take <strong>A</strong>. You said the face has colours and moods — in B and C the mood only lives in two small bars, where in A the whole panel carries it. All three sit between 6% and 10% lightness, so none of them will light up a dark room at 2am.
+</p>
+
+</div>

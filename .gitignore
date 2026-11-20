@@ -20,3 +20,6 @@ node_modules/
 # os
 Thumbs.db
 .DS_Store
+
+# brainstorm server scratch
+.superpowers/
