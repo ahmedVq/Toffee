@@ -14,7 +14,14 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import dev.toffee.companion.ToffeeConfig
 import dev.toffee.companion.net.KeystoreTokenStore
+import dev.toffee.companion.net.Session
+import dev.toffee.companion.net.ToffeeHttp
+import dev.toffee.companion.update.UpdateResultReceiver
+import dev.toffee.companion.update.Updater
+import kotlinx.coroutines.launch
 
 /**
  * The only screen that is not the face.
@@ -50,11 +57,18 @@ class MaintenanceActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#8A8A8E"))
             textSize = 14f
             setPadding(0, pad / 4, 0, pad / 2)
-            text = if (Kiosk.isDeviceOwner(this@MaintenanceActivity)) {
+            val owner = if (Kiosk.isDeviceOwner(this@MaintenanceActivity)) {
                 "Device owner. The tablet is pinned."
             } else {
                 "Not device owner. The tablet is escapable."
             }
+            // The app's logs do not reach logcat on this ROM, so this line is
+            // the only place a failed silent install is ever visible.
+            val update = UpdateResultReceiver.lastResult(this@MaintenanceActivity)
+            // Written as a code point because editing passes keep turning
+            // the escape into a real line break in the source.
+            val br = 10.toChar().toString()
+            text = if (update == null) owner else owner + br + update
         }
 
         val pinField = EditText(this).apply {
@@ -93,6 +107,25 @@ class MaintenanceActivity : AppCompatActivity() {
             tool("Sign this tablet out") {
                 KeystoreTokenStore(applicationContext).clear()
                 status.text = "Signed out. It will ask for the identity again."
+            },
+        )
+        tools.addView(
+            tool("Check for update") {
+                status.text = "Checking..."
+                val http = ToffeeHttp.client()
+                val updater = Updater(
+                    http = http,
+                    baseUrl = ToffeeConfig.baseUrl,
+                    apiKey = ToffeeConfig.publishableKey,
+                    session = Session(
+                        http = http,
+                        baseUrl = ToffeeConfig.baseUrl,
+                        apiKey = ToffeeConfig.publishableKey,
+                        store = KeystoreTokenStore(applicationContext),
+                    ),
+                    context = this@MaintenanceActivity,
+                )
+                lifecycleScope.launch { status.text = updater.check() }
             },
         )
         tools.addView(

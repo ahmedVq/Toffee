@@ -193,6 +193,44 @@ class LiveBackendTest {
         )
     }
 
+    /**
+     * The device may read the live release row and nothing else.
+     *
+     * With no row marked active this must be an empty list, not a 401 and not
+     * a 403 — a tablet that cannot read the table at all would report "nothing
+     * new" for ever and the self-update would be silently dead.
+     */
+    @Test
+    fun theTabletCanAskWhichBuildItShouldBeRunning() = runBlocking {
+        val pw = password
+        val s = session()
+        if (s.state() != SessionState.Active) {
+            assumeTrue("no credential; skipping", pw != null)
+            assertTrue(s.signIn(email, pw!!).isSuccess)
+        }
+
+        val token = s.accessToken()
+        assertTrue("no access token", token != null)
+
+        val response = ToffeeHttp.client(10_000).newCall(
+            okhttp3.Request.Builder()
+                .url(
+                    ToffeeConfig.baseUrl +
+                        "/rest/v1/app_release?select=version_code,url,sha256&active=eq.true",
+                )
+                .addHeader("apikey", ToffeeConfig.publishableKey)
+                .addHeader("Authorization", "Bearer " + token)
+                .get()
+                .build(),
+        ).execute()
+
+        response.use {
+            val body = it.body?.string().orEmpty()
+            assertEquals("RLS refused the device its own release row: " + body, 200, it.code)
+            println("APP_RELEASE: " + body)
+        }
+    }
+
     @Test
     fun theApkCarriesNoSecret() {
         assertTrue(ToffeeConfig.publishableKey.startsWith("sb_publishable_"))

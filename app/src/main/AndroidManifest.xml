@@ -15,6 +15,10 @@
     <!-- Presence only. Face DETECTION, never recognition, and no frame ever
          leaves the tablet. -->
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Self-update. Device Owner installs silently, which is the only
+         maintenance route that survives the kiosk. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
 
     <application
@@ -73,6 +77,14 @@
                 android:resource="@xml/device_admin" />
             <intent-filter>
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".update.UpdateResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="dev.toffee.companion.INSTALL_RESULT" />
             </intent-filter>
         </receiver>
 
