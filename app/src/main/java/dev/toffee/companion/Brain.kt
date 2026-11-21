@@ -6,6 +6,8 @@ import dev.toffee.companion.net.Reply
 import dev.toffee.companion.net.SessionState
 import dev.toffee.companion.reminders.Reminder
 import dev.toffee.companion.reminders.ReminderInbox
+import dev.toffee.companion.voice.SilentVoice
+import dev.toffee.companion.voice.Voice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -40,6 +42,9 @@ class Brain(
     private val inbox: ReminderInbox,
     private val sessionState: () -> SessionState,
     private val scope: CoroutineScope,
+    /** Defaults to silence, so a tablet whose engine failed to start behaves
+     *  exactly as it did before it had a voice: captions and nothing else. */
+    private val voice: Voice = SilentVoice,
 ) {
 
     private val _state = MutableStateFlow(FaceState())
@@ -106,6 +111,10 @@ class Brain(
         if (!usable()) inert()
     }
 
+    /** Stop talking. A tap while it is mid-sentence is him interrupting, and
+     *  a companion that talks over an interruption is a radio. */
+    fun hush() = voice.hush()
+
     /** The reminder's own words, with the agent's remark after them when it
      *  managed one that does not already contain them. */
     private fun captionFor(r: Reminder, reply: Reply): String {
@@ -148,6 +157,10 @@ class Brain(
         }
         clearJob?.cancel()
         _state.value = FaceState(mood = reply.mood, line = line, listening = false)
+        // The caption and the speaker carry the same words, always. A line
+        // shown but not said is one he can miss from two feet away, which is
+        // the whole failure a reminder must not have.
+        voice.say(line, reply.mood)
         clearJob = scope.launch {
             delay(LINE_TTL_MS)
             // The sentence goes; the expression stays. A face that snaps back

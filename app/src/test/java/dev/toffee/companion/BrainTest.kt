@@ -7,6 +7,7 @@ import dev.toffee.companion.net.SessionState
 import dev.toffee.companion.reminders.AnnouncedStore
 import dev.toffee.companion.reminders.Reminder
 import dev.toffee.companion.reminders.ReminderInbox
+import dev.toffee.companion.voice.Voice
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -53,6 +54,14 @@ class BrainTest {
         val ids = mutableSetOf<String>()
         override suspend fun contains(id: String) = id in ids
         override suspend fun add(id: String) { ids += id }
+    }
+
+    private class RecordingVoice : Voice {
+        val said = mutableListOf<Pair<String, Mood>>()
+        var hushed = false
+        override var speaking = false
+        override fun say(text: String, mood: Mood) { said += text to mood }
+        override fun hush() { hushed = true }
     }
 
     private fun reminder(id: String) = Reminder(id, "stand up", 0L, 1L)
@@ -329,5 +338,73 @@ class BrainTest {
 
         assertEquals(1, agent.events.size)
         assertEquals(1, agent.turns.size)
+    }
+
+    // ---------------------------------------------------------------- voice
+
+    @Test
+    fun `every line it shows is also spoken`() = runTest {
+        val agent = FakeAgent().apply { reply = Reply("Back, are you.", Mood.FRUSTRATED) }
+        val voice = RecordingVoice()
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.onArrival()
+        advanceTimeBy(1_000)
+
+        assertEquals(listOf("Back, are you." to Mood.FRUSTRATED), voice.said)
+    }
+
+    @Test
+    fun `silence from the governor is not spoken`() = runTest {
+        val agent = FakeAgent().apply { reply = Reply(null, Mood.SMUG) }
+        val voice = RecordingVoice()
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.onArrival()
+        advanceUntilIdle()
+
+        assertEquals("a decision not to speak is not a thing to say", emptyList<Pair<String, Mood>>(), voice.said)
+    }
+
+    @Test
+    fun `a reminder is spoken with its own words`() = runTest {
+        val agent = FakeAgent().apply {
+            reply = Reply("My brain's out of juice for the moment.", Mood.NEUTRAL)
+        }
+        val voice = RecordingVoice()
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.onReminders(ReminderInbox.Source.POLL, listOf(reminder("r1")))
+        advanceTimeBy(1_000)
+
+        assertTrue(
+            "a reminder that is shown but not said is a reminder he can miss: ${voice.said}",
+            voice.said.single().first.contains("stand up"),
+        )
+    }
+
+    // It would otherwise repeat itself for ever: refreshSessionState runs on
+    // every poll, and a dead tablet is precisely one nobody is touching.
+    @Test
+    fun `an inert tablet says nothing out loud`() = runTest {
+        val voice = RecordingVoice()
+        val brain = Brain(FakeAgent(), ReminderInbox(MemoryAnnounced()), { SessionState.Revoked }, this, voice)
+
+        brain.onArrival()
+        brain.refreshSessionState()
+        advanceUntilIdle()
+
+        assertTrue("the maintenance notice is read, not shouted", voice.said.isEmpty())
+        assertTrue(brain.state.value.line!!.isNotBlank())
+    }
+
+    @Test
+    fun `hush stops the voice`() = runTest {
+        val voice = RecordingVoice()
+        val brain = Brain(FakeAgent(), ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.hush()
+
+        assertTrue(voice.hushed)
     }
 }

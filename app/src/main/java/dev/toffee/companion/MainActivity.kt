@@ -33,6 +33,7 @@ import dev.toffee.companion.reminders.RoomAnnouncedStore
 import dev.toffee.companion.reminders.pendingOnIo
 import dev.toffee.companion.reminders.toRow
 import dev.toffee.companion.reminders.upsertOnIo
+import dev.toffee.companion.voice.AndroidVoice
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.time.ZoneId
@@ -46,8 +47,8 @@ import java.time.ZonedDateTime
  * an alarm. What to say and when lives in Brain, which has its own tests and
  * no Android in it.
  *
- * The tap stands in for speech. The microphone, the speaker and the camera
- * are Plan 3.
+ * The tap stands in for speech. The microphone and the camera are Plan 3;
+ * the speaker is wired.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -55,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var caption: TextView
     private lateinit var brain: Brain
     private lateinit var session: Session
+    private lateinit var voice: AndroidVoice
 
     private val ui = Handler(Looper.getMainLooper())
     private var brightnessTick: Runnable? = null
@@ -111,7 +113,12 @@ class MainActivity : AppCompatActivity() {
         val dao = Mirror.get(this).dao()
         val inbox = ReminderInbox(RoomAnnouncedStore(dao))
         val client = ToffeeClient(http, ToffeeConfig.baseUrl, ToffeeConfig.publishableKey, session)
-        brain = Brain(client, inbox, session::state, lifecycleScope)
+
+        // A tablet with no usable engine is a tablet that writes. Saying so
+        // once, in the caption, is the only sign it can give: there is no
+        // Settings app to go and look in.
+        voice = AndroidVoice(this) { why -> ui.post { caption.text = why } }
+        brain = Brain(client, inbox, session::state, lifecycleScope, voice)
 
         render()
 
@@ -137,6 +144,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         ReminderAlarmReceiver.listener = null
+        if (::voice.isInitialized) voice.shutdown()
         // A self-reposting Runnable holding the Activity outlives finish()
         // otherwise — and on the signed-out path this Activity finishes
         // immediately, so it would have leaked every launch.
