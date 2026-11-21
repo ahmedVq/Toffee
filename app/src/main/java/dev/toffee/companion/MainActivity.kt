@@ -35,9 +35,11 @@ import dev.toffee.companion.reminders.pendingOnIo
 import dev.toffee.companion.reminders.toRow
 import dev.toffee.companion.reminders.upsertOnIo
 import dev.toffee.companion.voice.AndroidVoice
+import dev.toffee.companion.voice.CloudEars
 import dev.toffee.companion.voice.DeviceEars
 import dev.toffee.companion.voice.Ears
 import dev.toffee.companion.voice.Heard
+import dev.toffee.companion.voice.bestEars
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.time.ZoneId
@@ -127,7 +129,13 @@ class MainActivity : AppCompatActivity() {
         // once, in the caption, is the only sign it can give: there is no
         // Settings app to go and look in.
         voice = AndroidVoice(this) { why -> ui.post { caption.text = why } }
-        ears = DeviceEars(this)
+        // The device's own recogniser is free and this ROM has one; the
+        // cloud is the fallback that costs money per minute, so it is only
+        // reached when there is nothing on the device to reach instead.
+        ears = bestEars(
+            DeviceEars(this),
+            CloudEars(http, ToffeeConfig.baseUrl, ToffeeConfig.publishableKey, session, this),
+        )
         brain = Brain(client, inbox, session::state, lifecycleScope, voice)
 
         render()
