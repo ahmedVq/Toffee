@@ -231,6 +231,76 @@ class LiveBackendTest {
         }
     }
 
+    /**
+     * The stored identity is readable by a fresh [Session] over the same
+     * Keystore.
+     *
+     * This is what makes the tablet work after a reboot, and it is the one
+     * thing no unit test can stand in for: EncryptedSharedPreferences is
+     * backed by hardware here, and KeystoreTokenStore is deliberately written
+     * to swallow a Keystore fault and return null rather than crash the HOME
+     * activity in a loop. That swallowing means a broken store looks exactly
+     * like a tablet nobody has signed in yet.
+     */
+    @Test
+    fun theStoredIdentityCanBeReadBack() {
+        val prefs = context.getSharedPreferences("toffee.session", android.content.Context.MODE_PRIVATE)
+        val store = KeystoreTokenStore(context)
+        val loaded = store.load()
+        val state = session(store).state()
+
+        assertEquals(
+            "the Keystore-backed store returned nothing. encrypted file has " +
+                prefs.all.size + " entries; session state was " + state,
+            SessionState.Active,
+            state,
+        )
+        assertTrue("a session with no access token is not a session", loaded!!.access.isNotEmpty())
+    }
+
+    /**
+     * How long a turn takes, from this device, on this network.
+     *
+     * The spec asks to "stream the LLM response and begin speaking at the
+     * first sentence boundary rather than waiting for the full reply", and
+     * also to "measure end-to-end before tuning anything else". The second
+     * instruction decides the first: /turn currently answers with one JSON
+     * body, and whether that is worth replacing with SSE depends entirely on
+     * this number.
+     *
+     * The elapsed time is written to a prefs file rather than asserted
+     * against a tight bound, because a passing assertion never shows its
+     * message and the number is the whole point. The assertion is only a
+     * ceiling: past this the tablet has been staring silently at him for
+     * long enough that the joke is dead whatever the cause.
+     */
+    @Test
+    fun aTurnComesBackFastEnoughToBeFunny() = runBlocking {
+        val s = session()
+        assumeTrue("the tablet is not signed in; nothing to measure", s.state() == SessionState.Active)
+
+        val client = dev.toffee.companion.net.ToffeeClient(
+            ToffeeHttp.client(),
+            ToffeeConfig.baseUrl,
+            ToffeeConfig.publishableKey,
+            s,
+        )
+
+        val started = System.currentTimeMillis()
+        val reply = client.turn("Say one short sentence back to me.")
+        val took = System.currentTimeMillis() - started
+
+        context.getSharedPreferences("toffee.bench", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putLong("turn_ms", took)
+            .putString("turn_reply", reply.speak ?: "(silence)")
+            .putBoolean("turn_offline", reply.offline)
+            .apply()
+
+        assertFalse("the agent was unreachable, so this measures nothing", reply.offline)
+        assertTrue("a turn took " + took + "ms, which is past any comic timing", took < 20_000)
+    }
+
     @Test
     fun theApkCarriesNoSecret() {
         assertTrue(ToffeeConfig.publishableKey.startsWith("sb_publishable_"))
