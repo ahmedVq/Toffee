@@ -6,6 +6,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -34,6 +35,9 @@ object Kiosk {
 
     private const val TAG = "Toffee"
 
+    /** Only used off the Device Owner path; nothing waits on the result. */
+    private const val PERMISSION_REQUEST = 7301
+
     fun isDeviceOwner(context: Context): Boolean =
         dpm(context)?.isDeviceOwnerApp(context.packageName) == true
 
@@ -61,6 +65,51 @@ object Kiosk {
             Log.i(TAG, "not device owner; running unpinned and escapable")
         }
     }
+
+    /**
+     * Grant the app its own runtime permissions.
+     *
+     * In a kiosk this is not a convenience, it is the only route. Device
+     * Owner removes Settings and the launcher, so a permission dialog the
+     * user dismisses once — or that never appears because the activity is
+     * pinned — is a microphone or a camera that is off for ever, with no way
+     * back short of a factory reset.
+     *
+     * A Device Owner may grant them to itself with no prompt at all. Without
+     * Device Owner this falls back to asking, which is the right behaviour
+     * during development on an unpinned device.
+     *
+     * @return the permissions still not held, so the caller can say so
+     *         rather than failing silently.
+     */
+    fun grantOwnPermissions(activity: Activity, vararg permissions: String): List<String> {
+        val manager = dpm(activity)
+        if (manager != null && isDeviceOwner(activity)) {
+            val admin = ComponentName(activity, ToffeeDeviceAdmin::class.java)
+            for (permission in permissions) {
+                runCatching {
+                    manager.setPermissionGrantState(
+                        admin,
+                        activity.packageName,
+                        permission,
+                        DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED,
+                    )
+                }.onFailure { Log.w(TAG, "could not grant $permission: $it") }
+            }
+        } else {
+            val missing = permissions.filter { !granted(activity, it) }
+            if (missing.isNotEmpty()) {
+                runCatching { activity.requestPermissions(missing.toTypedArray(), PERMISSION_REQUEST) }
+            }
+        }
+        // Re-read rather than trust the call: setPermissionGrantState returns
+        // false for a permission the platform will not hand over, and the
+        // caller needs the truth, not the attempt.
+        return permissions.filter { !granted(activity, it) }
+    }
+
+    fun granted(context: Context, permission: String): Boolean =
+        context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     fun exit(activity: Activity) {
         runCatching { activity.stopLockTask() }

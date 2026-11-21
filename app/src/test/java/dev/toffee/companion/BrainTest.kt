@@ -407,4 +407,49 @@ class BrainTest {
 
         assertTrue(voice.hushed)
     }
+
+    // ----------------------------------------------------------- listening
+
+    @Test
+    fun `while it is listening the face says so`() = runTest {
+        val brain = Brain(FakeAgent(), ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this)
+
+        brain.onListening()
+
+        assertEquals(Mood.LISTENING, brain.state.value.mood)
+        assertTrue("the mic being live is never ambiguous", brain.state.value.listening)
+    }
+
+    // He taps, says nothing, walks off. No turn goes out, no money is spent,
+    // and the face does not sit there listening until somebody notices.
+    @Test
+    fun `hearing nothing costs nothing`() = runTest {
+        val agent = FakeAgent()
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this)
+
+        brain.onListening()
+        brain.onHeardNothing()
+        advanceUntilIdle()
+
+        assertEquals("silence is not a turn", 0, agent.turns.size)
+        assertFalse(brain.state.value.listening)
+        assertEquals(Mood.NEUTRAL, brain.state.value.mood)
+        assertNull(brain.state.value.line)
+    }
+
+    @Test
+    fun `a tablet that cannot hear says so out loud`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent()
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.onListening()
+        brain.onCannotHear("no recogniser")
+        advanceTimeBy(1_000)
+
+        assertEquals("nothing was heard, so nothing is asked", 0, agent.turns.size)
+        assertFalse(brain.state.value.listening)
+        assertTrue(brain.state.value.line!!.isNotBlank())
+        assertTrue("there is no Settings app to find this out in", voice.said.isNotEmpty())
+    }
 }

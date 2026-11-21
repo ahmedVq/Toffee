@@ -115,6 +115,42 @@ class Brain(
      *  a companion that talks over an interruption is a radio. */
     fun hush() = voice.hush()
 
+    /**
+     * The mic is open.
+     *
+     * Called before listening starts rather than after, because the gap
+     * between the tap and the first word is exactly where he needs to know
+     * whether the thing is listening. The spec asks for a listening state
+     * that is unambiguous across a room; ambiguity here is the failure.
+     */
+    fun onListening() {
+        clearJob?.cancel()
+        _state.value = FaceState(mood = Mood.LISTENING, line = null, listening = true)
+    }
+
+    /**
+     * The mic was open and nothing came of it.
+     *
+     * No turn goes out: an empty string would cost an LLM call and get a
+     * reply to nothing. And the face must come back, or a tap he abandoned
+     * leaves it listening until somebody notices.
+     */
+    fun onHeardNothing() {
+        clearJob?.cancel()
+        _state.value = FaceState(mood = Mood.NEUTRAL, line = null, listening = false)
+    }
+
+    /**
+     * It cannot listen at all — no recogniser, no permission, no microphone.
+     *
+     * Said out loud as well as shown, because there is no Settings app on
+     * this device to go and discover it in, and a face that does nothing
+     * when tapped is indistinguishable from a broken one.
+     */
+    fun onCannotHear(reason: String) {
+        show(Reply("I can't hear you. " + reason, Mood.FRUSTRATED))
+    }
+
     /** The reminder's own words, with the agent's remark after them when it
      *  managed one that does not already contain them. */
     private fun captionFor(r: Reminder, reply: Reply): String {

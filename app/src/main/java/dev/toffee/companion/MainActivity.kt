@@ -1,5 +1,6 @@
 package dev.toffee.companion
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
@@ -34,6 +35,9 @@ import dev.toffee.companion.reminders.pendingOnIo
 import dev.toffee.companion.reminders.toRow
 import dev.toffee.companion.reminders.upsertOnIo
 import dev.toffee.companion.voice.AndroidVoice
+import dev.toffee.companion.voice.DeviceEars
+import dev.toffee.companion.voice.Ears
+import dev.toffee.companion.voice.Heard
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.time.ZoneId
@@ -47,8 +51,7 @@ import java.time.ZonedDateTime
  * an alarm. What to say and when lives in Brain, which has its own tests and
  * no Android in it.
  *
- * The tap stands in for speech. The microphone and the camera are Plan 3;
- * the speaker is wired.
+ * A tap opens the microphone; the camera is still to come.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -57,6 +60,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var brain: Brain
     private lateinit var session: Session
     private lateinit var voice: AndroidVoice
+    private lateinit var ears: Ears
 
     private val ui = Handler(Looper.getMainLooper())
     private var brightnessTick: Runnable? = null
@@ -92,6 +96,11 @@ class MainActivity : AppCompatActivity() {
         )
 
         Kiosk.enter(this)
+        // Asked for at startup rather than on the first tap, so that on a
+        // device that is not yet Device Owner the dialog is out of the way
+        // before he ever touches the face. As Device Owner it is granted
+        // outright and nothing is shown at all.
+        Kiosk.grantOwnPermissions(this, Manifest.permission.RECORD_AUDIO)
         wireMaintenanceGate()
         startBrightnessTicker()
         face.wake()
@@ -118,6 +127,7 @@ class MainActivity : AppCompatActivity() {
         // once, in the caption, is the only sign it can give: there is no
         // Settings app to go and look in.
         voice = AndroidVoice(this) { why -> ui.post { caption.text = why } }
+        ears = DeviceEars(this)
         brain = Brain(client, inbox, session::state, lifecycleScope, voice)
 
         render()
@@ -138,7 +148,41 @@ class MainActivity : AppCompatActivity() {
         startPolling(dao)
         listenForAlarms()
 
-        face.setOnClickListener { lifecycleScope.launch { brain.say(TAP_PROMPT) } }
+        face.setOnClickListener { onTap() }
+    }
+
+    /**
+     * The whole face is the button.
+     *
+     * A tap while it is talking is him interrupting, and a companion that
+     * talks over an interruption is a radio — so that tap only hushes it. A
+     * tap while it is already listening is a double-tap, and starting a
+     * second recognition on top of the first would lose both.
+     */
+    private fun onTap() {
+        if (brain.state.value.listening) return
+        if (voice.speaking) {
+            brain.hush()
+            return
+        }
+
+        lifecycleScope.launch {
+            val missing = Kiosk.grantOwnPermissions(
+                this@MainActivity,
+                Manifest.permission.RECORD_AUDIO,
+            )
+            if (missing.isNotEmpty()) {
+                brain.onCannotHear("The microphone is switched off and I can't switch it on.")
+                return@launch
+            }
+
+            brain.onListening()
+            when (val heard = ears.listen()) {
+                is Heard.Words -> brain.say(heard.text)
+                is Heard.Nothing -> brain.onHeardNothing()
+                is Heard.Unavailable -> brain.onCannotHear(heard.reason)
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -292,9 +336,6 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val TIMEZONE = "Africa/Cairo"
 
-        /** Standing in for speech until Plan 3 brings the microphone. A tap
-         *  is Ahmed asking for attention, so this is what that means. */
-        const val TAP_PROMPT = "I tapped you. What should I be doing?"
 
         /** A tap is a tap; a drag or a long hold is not. */
         const val TAP_SLOP_DP = 24f
