@@ -5,7 +5,9 @@ import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -61,6 +63,7 @@ class MaintenanceActivity : AppCompatActivity() {
             setHintTextColor(Color.parseColor("#48484A"))
             setSingleLine()
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            imeOptions = EditorInfo.IME_ACTION_DONE
         }
         val status = TextView(this).apply {
             setTextColor(Color.parseColor("#FF7043"))
@@ -101,6 +104,10 @@ class MaintenanceActivity : AppCompatActivity() {
             },
         )
 
+        // This screen is the only way back in once Device Owner removes
+        // Settings and the launcher, so the keyboard's Done must work here
+        // exactly as it does at setup. Samsung sends a raw ENTER KeyEvent
+        // rather than IME_ACTION_DONE, so both are accepted.
         val unlock = Button(this).apply {
             text = "Unlock"
             isAllCaps = false
@@ -119,6 +126,16 @@ class MaintenanceActivity : AppCompatActivity() {
                 }
                 pinField.setText("")
             }
+        }
+
+        pinField.setOnEditorActionListener { _, action, event ->
+            val go = action == EditorInfo.IME_ACTION_DONE ||
+                action == EditorInfo.IME_ACTION_GO ||
+                (
+                    event != null && event.keyCode == KeyEvent.KEYCODE_ENTER &&
+                        event.action == KeyEvent.ACTION_DOWN
+                    )
+            if (go) { unlock.performClick(); true } else false
         }
 
         for (v in listOf(title, note, pinField, unlock, status, tools)) {
