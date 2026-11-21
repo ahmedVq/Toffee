@@ -31,8 +31,12 @@ class EarsTest {
 
     /**
      * Records the answer rather than demanding one, because either answer is
-     * a legitimate state of this device and the fallback covers both. The
-     * answer is in the message whether it passes or not.
+     * a legitimate state of this device and BestEars covers both.
+     *
+     * It prints rather than asserts: a passing assertion never shows its
+     * message, so `assertTrue(message, true)` recorded the answer nowhere at
+     * all. What it does assert is the thing that must hold either way —
+     * that the tablet has *some* way to listen.
      */
     @Test
     fun doesThisTabletHaveARecogniser() {
@@ -40,11 +44,12 @@ class EarsTest {
         val mic = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
+        println("RECOGNISER=$available MIC_GRANTED=$mic")
+
         assertTrue(
-            "RECOGNISER=$available MIC_GRANTED=$mic — if the recogniser is " +
-                "absent, bestEars falls through to CloudEars and the cost is " +
-                "a few cents a month of transcription.",
-            true,
+            "no device recogniser and no microphone either, so neither DeviceEars " +
+                "nor CloudEars can work: RECOGNISER=$available MIC_GRANTED=$mic",
+            available || mic,
         )
     }
 

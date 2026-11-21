@@ -71,19 +71,32 @@ class VoiceTest {
         )
     }
 
-    /** Review Focus 2: a tablet that cannot speak must still caption, and
-     *  must say so exactly once rather than every line for ever. */
+    /**
+     * Review Focus 2, from the side this device can actually prove.
+     *
+     * The survey says this tablet has a working `com.google.android.tts`, so
+     * `onFailure` must never fire here at all. Asserting "at most once" was
+     * useless: the count was zero, the failure path was never entered, and
+     * the test passed identically with the reporting deleted. Asserting zero
+     * on a working engine is a real constraint — it fails if AndroidVoice
+     * ever starts crying wolf, which on this device would put a permanent
+     * "you get subtitles" fault on the maintenance screen.
+     */
     @Test
-    fun aBrokenEngineIsReportedOnceAndNeverCrashes() {
+    fun aWorkingEngineNeverReportsAFailure() {
         val calls = AtomicInteger(0)
         val voice = AndroidVoice(context) { calls.incrementAndGet() }
 
         repeat(5) { voice.say("line $it", Mood.NEUTRAL) }
-        Thread.sleep(2_000)
+        Thread.sleep(3_000)
         voice.hush()
         voice.shutdown()
 
-        assertTrue("onFailure fired more than once: ${calls.get()}", calls.get() <= 1)
+        assertEquals(
+            "the engine works, so nothing should have been reported broken",
+            0,
+            calls.get(),
+        )
     }
 
     @Test

@@ -65,10 +65,15 @@ class MaintenanceActivity : AppCompatActivity() {
             // The app's logs do not reach logcat on this ROM, so this line is
             // the only place a failed silent install is ever visible.
             val update = UpdateResultReceiver.lastResult(this@MaintenanceActivity)
+            // Everything currently broken. Without this the only notice a
+            // dead microphone, a dead mouth or a camera that would not bind
+            // ever gets is a caption the next spoken line overwrites.
+            val broken = Faults.all(this@MaintenanceActivity)
             // Written as a code point because editing passes keep turning
             // the escape into a real line break in the source.
             val br = 10.toChar().toString()
-            text = if (update == null) owner else owner + br + update
+            val lines = listOf(owner) + listOfNotNull(update) + broken
+            text = lines.joinToString(separator = br)
         }
 
         val pinField = EditText(this).apply {

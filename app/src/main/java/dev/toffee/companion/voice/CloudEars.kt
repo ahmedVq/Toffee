@@ -52,19 +52,29 @@ class CloudEars(
     override suspend fun listen(): Heard {
         if (!available()) return Heard.Unavailable("I don't have permission to use the microphone.")
 
-        val pcm = withContext(Dispatchers.IO) { record() }
+        val heard = withContext(Dispatchers.IO) { record() }
             ?: return Heard.Unavailable("The microphone would not open.")
 
-        // Less than a quarter second of audio is a tap, not a sentence, and
-        // is not worth a round trip or the money it costs.
-        if (pcm.size < Wav.SAMPLE_RATE / 2) return Heard.Nothing
+        // The guard that matters, and it is about speech rather than length.
+        // A tap nobody spoke into runs the recorder to its ten-second ceiling
+        // and produces 320KB of room tone — which a length check waves
+        // straight through to a transcription endpoint that bills by the
+        // minute. Vad knows whether anything above its start threshold ever
+        // arrived; nothing else does.
+        if (!heard.speech) return Heard.Nothing
+
+        // And a quarter second of speech is a syllable, not a sentence.
+        if (heard.pcm.size < Wav.SAMPLE_RATE / 2) return Heard.Nothing
 
         val token = session.accessToken() ?: return Heard.Unavailable("This tablet is not signed in.")
-        return withContext(Dispatchers.IO) { send(pcm, token) }
+        return withContext(Dispatchers.IO) { send(heard.pcm, token) }
     }
 
-    /** @return raw 16-bit little-endian mono PCM, or null if the mic failed. */
-    private suspend fun record(): ByteArray? {
+    /** Raw 16-bit little-endian mono PCM, and whether any of it was speech. */
+    private class Recording(val pcm: ByteArray, val speech: Boolean)
+
+    /** @return what was recorded, or null if the microphone would not open. */
+    private suspend fun record(): Recording? {
         val minimum = AudioRecord.getMinBufferSize(
             Wav.SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
@@ -97,6 +107,7 @@ class CloudEars(
         val out = ByteArrayOutputStream()
         val samples = ShortArray(block / 2)
         val vad = Vad()
+
         try {
             recorder.startRecording()
             while (currentCoroutineContext().isActive) {
@@ -123,7 +134,7 @@ class CloudEars(
             runCatching { recorder.stop() }
             runCatching { recorder.release() }
         }
-        return out.toByteArray()
+        return Recording(out.toByteArray(), vad.heardSpeech)
     }
 
     private fun send(pcm: ByteArray, token: String): Heard {

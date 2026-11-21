@@ -22,6 +22,7 @@ class Presence(
     private val arriveAfterMs: Long = ARRIVE_AFTER_MS,
     private val leaveAfterMs: Long = LEAVE_AFTER_MS,
     private val stillHereEveryMs: Long = STILL_HERE_EVERY_MS,
+    private val arriveGapMs: Long = ARRIVE_GAP_MS,
 ) {
 
     sealed class Change {
@@ -63,7 +64,12 @@ class Presence(
 
     private fun whileEmpty(seen: Boolean, atMs: Long): Change? {
         if (!seen) {
-            runSinceMs = null
+            // One missed detection is not an empty room. FAST mode at 320x240
+            // on a 2016 front camera drops faces routinely — he looks down at
+            // the keyboard while pulling the chair in — and resetting the run
+            // on every miss meant he was greeted minutes late or never.
+            val last = lastSeenMs
+            if (last == null || atMs - last > arriveGapMs) runSinceMs = null
             return null
         }
         val since = runSinceMs ?: atMs.also { runSinceMs = it }
@@ -107,9 +113,14 @@ class Presence(
         /**
          * Two minutes. Short enough that coming back from a coffee is an
          * arrival worth ambushing, long enough that reading something on the
-         * desk is not a departure.
+         * desk is not a departure. Must stay longer than [ARRIVE_AFTER_MS]:
+         * believing he has gone is the expensive mistake.
          */
         const val LEAVE_AFTER_MS = 120_000L
+
+        /** How long a face may be missing mid-arrival before the run counts
+         *  as broken. Two sampling intervals plus room to spare. */
+        const val ARRIVE_GAP_MS = 10_000L
 
         /** The spec asks for sustained presence to be an event. The backend
          *  already buckets `still_here` by the hour, so this matches. */

@@ -156,4 +156,39 @@ class PresenceTest {
             p.sample(2, Presence.ARRIVE_AFTER_MS),
         )
     }
+
+    // Found in review. Arrival had no gap tolerance at all: a single missed
+    // sample restarted the run. At one sample every four seconds and FAST
+    // detection on a 2016 front camera at 320x240, missing one frame while
+    // he pulls his chair in is ordinary, and it meant he was greeted minutes
+    // late or never.
+    @Test
+    fun `a dropped frame while he sits down does not restart the arrival`() {
+        val p = Presence()
+        assertNull(p.sample(1, 0))
+        assertNull("one missed detection is not an empty room", p.sample(0, 4_000))
+        assertEquals(Presence.Change.Arrived, p.sample(1, 8_000))
+    }
+
+    @Test
+    fun `a real gap does restart the arrival`() {
+        val p = Presence()
+        p.sample(1, 0)
+        p.sample(0, Presence.ARRIVE_GAP_MS + 1_000)
+        p.sample(1, Presence.ARRIVE_GAP_MS + 5_000)
+        assertNull(
+            "someone crossing the room twice is still not someone sitting down",
+            p.sample(1, Presence.ARRIVE_GAP_MS + 7_000),
+        )
+    }
+
+    // The rule the thresholds exist for, asserted directly rather than left
+    // implicit in the arithmetic of the other tests.
+    @Test
+    fun `leaving is slower to believe than arriving`() {
+        assertTrue(
+            "a false departure costs two LLM calls and two interruptions",
+            Presence.LEAVE_AFTER_MS > Presence.ARRIVE_AFTER_MS,
+        )
+    }
 }

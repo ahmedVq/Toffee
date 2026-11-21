@@ -64,13 +64,20 @@ class CameraEyeTest {
         }
 
         val samples = AtomicInteger(0)
+        val failure = java.util.concurrent.atomic.AtomicReference<String?>(null)
         lateinit var owner: Resumed
         lateinit var eye: CameraEye
 
         instrumentation.runOnMainSync {
             owner = Resumed()
             owner.registry.currentState = Lifecycle.State.RESUMED
-            eye = CameraEye(context, owner, everyMs = 2_000) { _, _ -> samples.incrementAndGet() }
+            eye = CameraEye(
+                context = context,
+                owner = owner,
+                everyMs = 2_000,
+                onFaces = { _, _ -> samples.incrementAndGet() },
+                onUnavailable = { why -> failure.set(why) },
+            )
             eye.start()
         }
 
@@ -81,6 +88,10 @@ class CameraEyeTest {
         }
 
         val n = samples.get()
+        assertTrue(
+            "the camera reported itself unusable: ${failure.get()}",
+            failure.get() == null,
+        )
         assertTrue(
             "$n samples in 21s at one every 2s — the camera is not delivering frames",
             n >= 4,

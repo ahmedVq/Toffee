@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -18,6 +19,7 @@ import dev.toffee.companion.face.Mood
 import dev.toffee.companion.face.Palette
 import dev.toffee.companion.kiosk.BrightnessPolicy
 import dev.toffee.companion.kiosk.CornerHold
+import dev.toffee.companion.kiosk.Faults
 import dev.toffee.companion.kiosk.Kiosk
 import dev.toffee.companion.kiosk.MaintenanceActivity
 import dev.toffee.companion.net.KeystoreTokenStore
@@ -70,6 +72,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ears: Ears
     private val presence = Presence()
     private var eye: CameraEye? = null
+    private var greeted = false
 
     private val ui = Handler(Looper.getMainLooper())
     private var brightnessTick: Runnable? = null
@@ -139,7 +142,14 @@ class MainActivity : AppCompatActivity() {
         // A tablet with no usable engine is a tablet that writes. Saying so
         // once, in the caption, is the only sign it can give: there is no
         // Settings app to go and look in.
-        voice = AndroidVoice(this) { why -> ui.post { caption.text = why } }
+        voice = AndroidVoice(this) { why ->
+            // The caption alone was not enough: the arrival greeting lands a
+            // second or two later and wipes it, and AndroidVoice reports the
+            // failure exactly once, so that was the only notice there would
+            // ever be that the mouth is dead.
+            Faults.record(this, Faults.VOICE, why)
+            ui.post { caption.text = why }
+        }
         // The device's own recogniser is free and this ROM has one; the
         // cloud is the fallback that costs money per minute, so it is only
         // reached when there is nothing on the device to reach instead.
@@ -166,7 +176,7 @@ class MainActivity : AppCompatActivity() {
         // Who says he has arrived: the camera if there is one, otherwise the
         // fact that the app just started. Both would greet him twice — once
         // on launch and again six seconds later when the eye caught up.
-        if (!startWatching()) lifecycleScope.launch { brain.onArrival() }
+        if (!startWatching()) greetOnce()
         startPolling(dao)
         listenForAlarms()
 
@@ -194,15 +204,28 @@ class MainActivity : AppCompatActivity() {
                 Manifest.permission.RECORD_AUDIO,
             )
             if (missing.isNotEmpty()) {
-                brain.onCannotHear("The microphone is switched off and I can't switch it on.")
+                val why = "The microphone is switched off and I can't switch it on."
+                Faults.record(this@MainActivity, Faults.EARS, why)
+                brain.onCannotHear(why)
                 return@launch
             }
 
             brain.onListening()
             when (val heard = ears.listen()) {
-                is Heard.Words -> brain.say(heard.text)
-                is Heard.Nothing -> brain.onHeardNothing()
-                is Heard.Unavailable -> brain.onCannotHear(heard.reason)
+                is Heard.Words -> {
+                    Faults.clear(this@MainActivity, Faults.EARS)
+                    brain.say(heard.text)
+                }
+                is Heard.Nothing -> {
+                    Faults.clear(this@MainActivity, Faults.EARS)
+                    brain.onHeardNothing()
+                }
+                is Heard.Unavailable -> {
+                    // Said now, and kept where the maintenance screen can
+                    // show it later: the caption is gone in twenty seconds.
+                    Faults.record(this@MainActivity, Faults.EARS, heard.reason)
+                    brain.onCannotHear(heard.reason)
+                }
             }
         }
     }
@@ -283,9 +306,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun startWatching(): Boolean {
         if (!Kiosk.granted(this, Manifest.permission.CAMERA)) {
-            Log.w(TAG, "no camera permission; presence stays unknown")
+            // Said, not only logged. In a kiosk there is no Settings app to
+            // grant it from, so this is permanent until someone is told.
+            cannotSee("I can't use the camera, so I don't know when you're there.")
             return false
         }
+        Faults.clear(this, Faults.CAMERA)
 
         val reporter = PresenceReporter(
             http = ToffeeHttp.client(),
@@ -294,28 +320,54 @@ class MainActivity : AppCompatActivity() {
             session = session,
         )
 
-        eye = CameraEye(this, this) { faces, atMs ->
-            val change = presence.sample(faces, atMs) ?: return@CameraEye
-            lifecycleScope.launch {
-                when (change) {
-                    is Presence.Change.Arrived -> {
-                        reporter.report(present = true, atMs = atMs, durationS = null)
-                        brain.onArrival()
+        eye = CameraEye(
+            context = this,
+            owner = this,
+            onFaces = { faces, atMs ->
+                val change = presence.sample(faces, atMs) ?: return@CameraEye
+                lifecycleScope.launch {
+                    // presence works in elapsedRealtime; the row wants a
+                    // wall-clock instant, and the two are only ever a sample
+                    // apart.
+                    val wall = System.currentTimeMillis()
+                    when (change) {
+                        is Presence.Change.Arrived -> {
+                            greeted = true
+                            reporter.report(present = true, atMs = wall, durationS = null)
+                            brain.onArrival()
+                        }
+                        is Presence.Change.Left -> {
+                            reporter.report(
+                                present = false,
+                                atMs = wall,
+                                durationS = change.afterMinutes * 60,
+                            )
+                            brain.onDeparture()
+                        }
+                        is Presence.Change.StillHere -> brain.onStillHere(change.minutes)
                     }
-                    is Presence.Change.Left -> {
-                        reporter.report(
-                            present = false,
-                            atMs = atMs,
-                            durationS = change.afterMinutes * 60,
-                        )
-                        brain.onDeparture()
-                    }
-                    is Presence.Change.StillHere -> brain.onStillHere(change.minutes)
                 }
-            }
-        }
+            },
+            // Binding happens asynchronously and can fail long after this
+            // method has returned true, so the fallback greeting has to live
+            // here rather than in the return value.
+            onUnavailable = { why -> runOnUiThread { cannotSee(why); greetOnce() } },
+        )
         eye?.start()
         return true
+    }
+
+    /** Record it where the maintenance screen will show it, and say it once. */
+    private fun cannotSee(why: String) {
+        Faults.record(this, Faults.CAMERA, why)
+        Log.w(TAG, why)
+    }
+
+    /** The greeting happens once per launch, whoever gets there first. */
+    private fun greetOnce() {
+        if (greeted) return
+        greeted = true
+        lifecycleScope.launch { brain.onArrival() }
     }
 
     /** The route that works with the router unplugged. */
@@ -394,7 +446,7 @@ class MainActivity : AppCompatActivity() {
     private fun startBrightnessTicker() {
         val tick = object : Runnable {
             override fun run() {
-                val now = System.currentTimeMillis()
+                val now = SystemClock.elapsedRealtime()
                 Kiosk.apply(
                     this@MainActivity,
                     BrightnessPolicy.levelFor(

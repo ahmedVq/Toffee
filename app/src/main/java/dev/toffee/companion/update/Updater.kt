@@ -32,7 +32,10 @@ import okhttp3.Request
  * a brick, and the `active` flag on the row is the remote switch that will
  * make a scheduled check safe to add later.
  *
- * Never throws. Every path returns a sentence fit to show on that screen.
+ * Never throws. Every path returns a sentence fit to show on that screen, and
+ * every path says what actually happened — "nothing new" is reserved for
+ * there genuinely being nothing new, because a self-update that is broken and
+ * reports itself healthy is worse than one that is obviously broken.
  */
 class Updater(
     private val http: OkHttpClient,
@@ -44,35 +47,58 @@ class Updater(
 
     private val app = context.applicationContext
 
+    private sealed class Fetched {
+        data class Row(val release: Release) : Fetched()
+        object None : Fetched()
+        data class Failed(val why: String) : Fetched()
+    }
+
     suspend fun check(): String = withContext(Dispatchers.IO) {
         val token = session.accessToken() ?: return@withContext "This tablet is not signed in."
 
-        val release = fetchRelease(token) ?: return@withContext "Nothing new."
+        val release = when (val fetched = fetchRelease(token)) {
+            is Fetched.Row -> fetched.release
+            is Fetched.None -> return@withContext "Nothing new (on ${currentVersion()})."
+            is Fetched.Failed -> return@withContext fetched.why
+        }
+
         val current = currentVersion()
 
-        // Checked before downloading as well as after, so the common case —
-        // already up to date — costs one small request and no megabytes.
-        if (release.versionCode <= current) return@withContext "Nothing new (on $current)."
+        // The row's own faults, before a byte is fetched. Downloading first
+        // meant a plain-HTTP url was blocked by the platform and reported as
+        // "could not download" — telling whoever is standing there that the
+        // network failed when the fault was the row in front of them.
+        Install.refuse(current, release, app.packageName, null)?.let { return@withContext it }
+
         if (!Kiosk.isDeviceOwner(app)) {
             return@withContext "Version ${release.versionCode} is out, but this tablet is not " +
                 "device owner, so it cannot install it itself. Use a cable."
         }
 
         val apk = File(app.cacheDir, "update-${release.versionCode}.apk")
-        val sha = download(release.url, apk)
-            ?: return@withContext "Could not download version ${release.versionCode}."
+        try {
+            val sha = download(release.url, apk, token)
+                ?: return@withContext "Could not download version ${release.versionCode}."
 
-        Install.refuse(current, release, sha, apk.length())?.let { why ->
+            val landed = Downloaded(
+                sha256 = sha,
+                bytes = apk.length(),
+                versionCode = archiveVersion(apk),
+                packageName = archivePackage(apk),
+            )
+            Install.refuse(current, release, app.packageName, landed)
+                ?.let { return@withContext it }
+
+            install(apk, release.versionCode)
+        } finally {
+            // On every path, including the ones that return early. A
+            // truncated APK left in the cache is bytes nobody will ever look
+            // at again.
             apk.delete()
-            return@withContext why
         }
-
-        val started = install(apk, release.versionCode)
-        apk.delete()
-        started
     }
 
-    private fun fetchRelease(token: String): Release? {
+    private fun fetchRelease(token: String): Fetched {
         val request = Request.Builder()
             .url(
                 "$baseUrl/rest/v1/app_release" +
@@ -85,23 +111,39 @@ class Updater(
 
         return runCatching {
             http.newCall(request).execute().use { res ->
-                if (!res.isSuccessful) return null
+                if (!res.isSuccessful) {
+                    // Chiefly an RLS refusal, which would otherwise look
+                    // exactly like having nothing to install.
+                    return Fetched.Failed(
+                        "Could not read the release list (HTTP ${res.code}).",
+                    )
+                }
                 val rows = LENIENT.parseToJsonElement(res.body?.string().orEmpty()) as JsonArray
-                val row = rows.firstOrNull()?.jsonObject ?: return null
+                val row = rows.firstOrNull()?.jsonObject ?: return Fetched.None
+
                 fun str(key: String) = row[key]?.takeIf { it !is JsonNull }?.jsonPrimitive?.content
-                Release(
-                    versionCode = str("version_code")?.toIntOrNull() ?: return null,
-                    url = str("url") ?: return null,
-                    sha256 = str("sha256").orEmpty(),
-                )
+                val version = str("version_code")?.toIntOrNull()
+                val url = str("url")
+                if (version == null || url == null) {
+                    return Fetched.Failed("The release row is missing a version or a url.")
+                }
+                Fetched.Row(Release(version, url, str("sha256").orEmpty()))
             }
-        }.getOrNull()
+        }.getOrElse { Fetched.Failed("Could not reach the project to ask about updates.") }
     }
 
     /** @return the hex SHA-256 of what actually landed on disk, or null. */
-    private fun download(url: String, into: File): String? = runCatching {
+    private fun download(url: String, into: File, token: String): String? = runCatching {
         val digest = MessageDigest.getInstance("SHA-256")
-        http.newCall(Request.Builder().url(url).get().build()).execute().use { res ->
+        val builder = Request.Builder().url(url).get()
+        // Only to our own project, and only so that a private Storage bucket
+        // works. Sending the tablet's token to a third-party host would hand
+        // that host the tablet's identity.
+        if (url.startsWith("$baseUrl/")) {
+            builder.addHeader("apikey", apiKey).addHeader("Authorization", "Bearer $token")
+        }
+
+        http.newCall(builder.build()).execute().use { res ->
             if (!res.isSuccessful) return null
             val body = res.body ?: return null
             into.outputStream().use { out ->
@@ -122,33 +164,55 @@ class Updater(
         digest.digest().joinToString("") { "%02x".format(it) }
     }.getOrNull()
 
-    private fun install(apk: File, versionCode: Int): String = runCatching {
-        val installer = app.packageManager.packageInstaller
-        val params = PackageInstaller.SessionParams(
-            PackageInstaller.SessionParams.MODE_FULL_INSTALL,
-        )
-        val sessionId = installer.createSession(params)
-        installer.openSession(sessionId).use { session ->
-            session.openWrite("toffee", 0, apk.length()).use { out ->
-                apk.inputStream().use { it.copyTo(out) }
-                session.fsync(out)
-            }
-            // The result is broadcast to UpdateResultReceiver, which writes
-            // it where the maintenance screen can show it. This device's app
-            // logs do not reach logcat, so that is the only diagnostic there
-            // is if the install goes wrong.
-            val intent = Intent(UpdateResultReceiver.ACTION).setPackage(app.packageName)
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            session.commit(
-                PendingIntent.getBroadcast(app, sessionId, intent, flags).intentSender,
-            )
+    /** What the file itself claims, which is the only claim that binds. */
+    private fun archiveVersion(apk: File): Int? = runCatching {
+        val info = app.packageManager.getPackageArchiveInfo(apk.absolutePath, 0) ?: return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode.toInt()
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode
         }
-        "Installing version $versionCode. It will restart itself."
-    }.getOrElse { "Could not start the install: ${it.javaClass.simpleName}" }
+    }.getOrNull()
+
+    private fun archivePackage(apk: File): String? = runCatching {
+        app.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)?.packageName
+    }.getOrNull()
+
+    private fun install(apk: File, versionCode: Int): String {
+        val installer = app.packageManager.packageInstaller
+        var sessionId = -1
+        return runCatching {
+            val params = PackageInstaller.SessionParams(
+                PackageInstaller.SessionParams.MODE_FULL_INSTALL,
+            )
+            sessionId = installer.createSession(params)
+            installer.openSession(sessionId).use { session ->
+                session.openWrite("toffee", 0, apk.length()).use { out ->
+                    apk.inputStream().use { it.copyTo(out) }
+                    session.fsync(out)
+                }
+                // The result is broadcast to UpdateResultReceiver, which
+                // writes it where the maintenance screen can show it. This
+                // device's app logs do not reach logcat, so that is the only
+                // diagnostic there is if the install goes wrong.
+                val intent = Intent(UpdateResultReceiver.ACTION).setPackage(app.packageName)
+                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                } else {
+                    PendingIntent.FLAG_UPDATE_CURRENT
+                }
+                session.commit(
+                    PendingIntent.getBroadcast(app, sessionId, intent, flags).intentSender,
+                )
+            }
+            "Installing version $versionCode. It will restart itself."
+        }.getOrElse {
+            // An abandoned session is reclaimed; one left open is not.
+            if (sessionId >= 0) runCatching { installer.abandonSession(sessionId) }
+            "Could not start the install: ${it.javaClass.simpleName}"
+        }
+    }
 
     private fun currentVersion(): Int = runCatching {
         val info = app.packageManager.getPackageInfo(app.packageName, 0)

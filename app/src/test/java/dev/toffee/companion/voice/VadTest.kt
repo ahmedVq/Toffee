@@ -75,4 +75,26 @@ class VadTest {
         assertTrue(run(v, 5_000.0, 3_000, 3_500) == null)
         assertTrue("room tone is not silence once he is talking", run(v, 500.0, 3_500, 6_000) == null)
     }
+
+    // Found in review. Without this, a tap nobody spoke into recorded ten
+    // seconds of room tone and posted it to a paid transcription endpoint.
+    // The guard that was supposed to stop it tested the recording's LENGTH,
+    // and ten seconds of silence is not short.
+    @Test
+    fun `it knows whether it ever heard anything`() {
+        val quiet = vad()
+        run(quiet, 0.0, 0, 12_000)
+        assertFalse("silence is not speech", quiet.heardSpeech)
+
+        val spoken = vad()
+        run(spoken, 5_000.0, 0, 1_000)
+        assertTrue(spoken.heardSpeech)
+    }
+
+    @Test
+    fun `room tone alone is not speech`() {
+        val v = Vad(startRms = 600.0, stopRms = 400.0)
+        run(v, 500.0, 0, 12_000)
+        assertFalse("a humming fan must not cost money", v.heardSpeech)
+    }
 }

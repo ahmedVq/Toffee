@@ -1,6 +1,7 @@
 package dev.toffee.companion.presence
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraSelector
@@ -38,6 +39,16 @@ class CameraEye(
     private val owner: LifecycleOwner,
     private val everyMs: Long = SAMPLE_EVERY_MS,
     private val onFaces: (faces: Int, atMs: Long) -> Unit,
+    /**
+     * Called when the camera cannot be used at all.
+     *
+     * Found in review, and it was the worst defect in the branch: both
+     * failure paths below used to end in a `Log.w` that this ROM does not
+     * surface, while the caller had already been told the eye was running.
+     * A tablet whose camera would not bind then greeted nobody, ever —
+     * not on arrival, not on launch — and said nothing about why.
+     */
+    private val onUnavailable: (String) -> Unit = {},
 ) {
 
     private val app = context.applicationContext
@@ -74,6 +85,7 @@ class CameraEye(
             val cameraProvider = runCatching { future.get() }.getOrNull()
             if (cameraProvider == null) {
                 Log.w(TAG, "no camera provider; presence is unknown")
+                onUnavailable("The camera would not start.")
                 return@addListener
             }
             provider = cameraProvider
@@ -94,13 +106,21 @@ class CameraEye(
                     CameraSelector.DEFAULT_FRONT_CAMERA,
                     analysis,
                 )
-            }.onFailure { Log.w(TAG, "could not bind the front camera: $it") }
+            }.onFailure {
+                Log.w(TAG, "could not bind the front camera: $it")
+                onUnavailable("I can't see out of the front camera.")
+            }
         }, ContextCompat.getMainExecutor(app))
     }
 
     @ExperimentalGetImage
     private fun analyse(proxy: ImageProxy) {
-        val now = System.currentTimeMillis()
+        // elapsedRealtime, never the wall clock. BootReceiver relaunches this
+        // app after a power cut with a drifted RTC; once Wi-Fi associates the
+        // clock is corrected, and a forward jump made Presence announce
+        // "still here, 400 minutes" to a man who had just walked up, while a
+        // backward jump froze sampling for the width of the correction.
+        val now = SystemClock.elapsedRealtime()
         val image = proxy.image
 
         // Too soon, already working on one, or a frame with no image in it.

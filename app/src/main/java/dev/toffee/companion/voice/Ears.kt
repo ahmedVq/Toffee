@@ -41,8 +41,26 @@ interface Ears {
 /**
  * The device's own recogniser when it has one, the cloud when it does not.
  *
- * Deliberately not a preference the user can set: there is no Settings app on
- * this tablet, and the right answer is a property of the ROM rather than a
+ * Decided on every listen, not once at startup. That was the bug: the
+ * permission grant at startup is asynchronous on a device that is not yet
+ * Device Owner, so a single early call to [Ears.available] saw no microphone,
+ * pinned the tablet to the paid cloud path, and kept it there for the life of
+ * the process while a free recogniser sat installed. In a kiosk that process
+ * can live for months.
+ *
+ * Deliberately not a preference anyone can set: there is no Settings app on
+ * this tablet, and the right answer is a property of the device rather than a
  * taste.
  */
-fun bestEars(device: Ears, cloud: Ears): Ears = if (device.available()) device else cloud
+class BestEars(private val device: Ears, private val cloud: Ears) : Ears {
+
+    override fun available(): Boolean = device.available() || cloud.available()
+
+    override suspend fun listen(): Heard = when {
+        device.available() -> device.listen()
+        cloud.available() -> cloud.listen()
+        else -> Heard.Unavailable("I have no way to listen on this tablet.")
+    }
+}
+
+fun bestEars(device: Ears, cloud: Ears): Ears = BestEars(device, cloud)

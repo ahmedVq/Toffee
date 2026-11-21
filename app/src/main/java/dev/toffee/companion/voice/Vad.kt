@@ -30,6 +30,17 @@ class Vad(
     private var speaking = false
     private var quietSinceMs: Long? = null
 
+    /**
+     * Whether anything above [startRms] was ever offered.
+     *
+     * The caller needs this, not just "has it stopped". A tap nobody spoke
+     * into stops at [maxMs] with a full ten seconds of room tone recorded,
+     * and that recording is long, not short — so a guard on its length lets
+     * it through to a paid transcription endpoint.
+     */
+    var heardSpeech: Boolean = false
+        private set
+
     /** @return true when the recording should stop. */
     fun offer(rms: Double, atMs: Long): Boolean {
         val first = firstMs ?: atMs.also { firstMs = it }
@@ -40,6 +51,7 @@ class Vad(
             // this the recording ends before it has begun.
             if (rms >= startRms) {
                 speaking = true
+                heardSpeech = true
                 quietSinceMs = null
             }
             return false
