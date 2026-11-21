@@ -29,6 +29,29 @@ Deno.test("SYSTEM_PROMPT contains the evidence rule", () => {
   assertStringIncludes(SYSTEM_PROMPT, "cannot substantiate");
 });
 
+// Found live, on the first real model: every reply came back wrapped in
+// markdown ("**charge the tablet properly**"). This text is spoken aloud by
+// the tablet and drawn as a caption under the face — neither renders
+// markdown, so the asterisks are read out or printed raw.
+Deno.test("SYSTEM_PROMPT forbids markdown, because the reply is spoken", () => {
+  const p = SYSTEM_PROMPT.toLowerCase();
+  assert(p.includes("markdown"), "the prompt must forbid markdown by name");
+  assert(
+    p.includes("aloud") || p.includes("spoken"),
+    "it must say why: the words are spoken, not rendered",
+  );
+});
+
+// Also found live: set_mood was never called once across several turns, so
+// the face sat at neutral for ever. Half the design is that the expression
+// changes; the model has to be told to drive it.
+Deno.test("SYSTEM_PROMPT tells it to drive its own face", () => {
+  assert(
+    SYSTEM_PROMPT.includes("set_mood"),
+    "the prompt must name the tool that changes the face",
+  );
+});
+
 Deno.test("renderSystem names the user as Ahmed", () => {
   assertStringIncludes(renderSystem(ctx), "Ahmed");
 });

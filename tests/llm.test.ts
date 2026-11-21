@@ -1,35 +1,50 @@
 import { assert, assertEquals } from "@std/assert";
 import { runTurn, type ToolSpec } from "../supabase/functions/_shared/llm.ts";
 
-Deno.env.set("GEMINI_API_KEY", "test-key-not-real");
+Deno.env.set("OPENAI_API_KEY", "test-key-not-real");
 
 type Chunk = Record<string, unknown>;
-type Content = { role: string; parts: Record<string, unknown>[] };
+type Message = Record<string, unknown>;
 type ReqBody = {
-  systemInstruction?: unknown;
-  contents: Content[];
-  tools?: unknown;
+  model?: string;
+  messages: Message[];
+  tools?: { type: string; function: ToolSpec }[];
+  stream?: boolean;
 };
 type Req = { url: string; headers: Headers; body: ReqBody };
 
 const enc = new TextEncoder();
 const sse = (chunk: Chunk) =>
   enc.encode(`data: ${JSON.stringify(chunk)}\r\n\r\n`);
+
 const textChunk = (text: string): Chunk => ({
-  candidates: [{ content: { role: "model", parts: [{ text }] } }],
-  usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
+  choices: [{ index: 0, delta: { role: "assistant", content: text } }],
 });
-const callChunk = (name: string, args: unknown): Chunk => ({
-  candidates: [{
-    content: { role: "model", parts: [{ functionCall: { name, args } }] },
+
+/** `args` is the raw arguments string, exactly as the wire carries it. */
+const callChunk = (name: string, args: string, id = `call_${name}`): Chunk => ({
+  choices: [{
+    index: 0,
+    delta: {
+      role: "assistant",
+      tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: args } }],
+    },
   }],
-  usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
 });
+
+/** Sent last, with empty choices, when stream_options.include_usage is set. */
+const usageChunk = (): Chunk => ({
+  choices: [],
+  usage: { prompt_tokens: 10, completion_tokens: 5 },
+});
+
 const sseResponse = (chunks: Chunk[]) =>
   new Response(
     new ReadableStream({
       start(c) {
         for (const ch of chunks) c.enqueue(sse(ch));
+        c.enqueue(sse(usageChunk()));
+        c.enqueue(enc.encode("data: [DONE]\r\n\r\n"));
         c.close();
       },
     }),
@@ -73,13 +88,39 @@ Deno.test("sends tool declarations in the request body", async () => {
   await withFetch(() => sseResponse([textChunk("Hello.")]), async (reqs) => {
     await runTurn({ ...base, dispatch: () => Promise.resolve(null) });
     const b = reqs[0].body;
-    assertEquals(b.tools, [{ functionDeclarations: [weather] }]);
-    assertEquals(b.systemInstruction, { parts: [{ text: "You are Toffee." }] });
-    assertEquals(b.contents, [{ role: "user", parts: [{ text: "hi" }] }]);
-    assert(reqs[0].url.includes("streamGenerateContent"));
+    assertEquals(b.tools, [{ type: "function", function: weather }]);
+    assertEquals(b.messages[0], { role: "system", content: "You are Toffee." });
+    assertEquals(b.messages[1], { role: "user", content: "hi" });
+    assertEquals(b.stream, true);
+    assert(typeof b.model === "string" && b.model.length > 0);
+    assert(reqs[0].url.includes("/chat/completions"));
     // key travels in a header, never in the URL
     assert(!reqs[0].url.includes("test-key-not-real"));
-    assertEquals(reqs[0].headers.get("x-goog-api-key"), "test-key-not-real");
+    assertEquals(reqs[0].headers.get("authorization"), "Bearer test-key-not-real");
+  });
+});
+
+// The conversation table stores Gemini's vocabulary ('user' | 'model') and a
+// CHECK constraint enforces it. OpenAI says 'assistant'. Sending 'model'
+// would be a 400 on every turn that has any history at all — which is every
+// turn after the first.
+Deno.test("stored history is translated from model to assistant", async () => {
+  await withFetch(() => sseResponse([textChunk("Fine.")]), async (reqs) => {
+    await runTurn({
+      ...base,
+      history: [
+        { role: "user", content: "hi" },
+        { role: "model", content: "what" },
+        { role: "user", content: "again" },
+      ],
+      dispatch: () => Promise.resolve(null),
+    });
+    assertEquals(reqs[0].body.messages.map((m) => m.role), [
+      "system",
+      "user",
+      "assistant",
+      "user",
+    ]);
   });
 });
 
@@ -88,7 +129,7 @@ Deno.test("executes a functionCall from the model and sends the result back", as
   await withFetch(
     (n) =>
       n === 0
-        ? sseResponse([callChunk("get_weather", { city: "Cairo" })])
+        ? sseResponse([callChunk("get_weather", '{"city":"Cairo"}')])
         : sseResponse([textChunk("It is sunny.")]),
     async (reqs) => {
       const out = await runTurn({
@@ -102,30 +143,56 @@ Deno.test("executes a functionCall from the model and sends the result back", as
       assertEquals(out.reply, "It is sunny.");
       assertEquals(out.calls, [{ name: "get_weather", result: { temp: 31 } }]);
       assertEquals(out.spent, { in: 20, out: 10 });
-      const contents = reqs[1].body.contents;
-      assertEquals(contents.at(-2), {
-        role: "model",
-        parts: [{
-          functionCall: { name: "get_weather", args: { city: "Cairo" } },
+
+      const messages = reqs[1].body.messages;
+      assertEquals(messages.at(-2), {
+        role: "assistant",
+        tool_calls: [{
+          id: "call_get_weather",
+          type: "function",
+          function: { name: "get_weather", arguments: '{"city":"Cairo"}' },
         }],
       });
-      assertEquals(contents.at(-1), {
-        role: "user",
-        parts: [{
-          functionResponse: {
-            name: "get_weather",
-            response: { result: { temp: 31 } },
-          },
-        }],
+      assertEquals(messages.at(-1), {
+        role: "tool",
+        tool_call_id: "call_get_weather",
+        content: JSON.stringify({ result: { temp: 31 } }),
       });
+    },
+  );
+});
+
+// Arguments arrive as fragments of a JSON string across several deltas. If
+// they are not reassembled in order the tool is called with nonsense.
+Deno.test("tool arguments split across deltas are reassembled", async () => {
+  const seen: unknown[] = [];
+  await withFetch(
+    (n) =>
+      n === 0
+        ? sseResponse([
+          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "get_weather", arguments: '{"ci' } }] } }] },
+          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'ty":"Ca' } }] } }] },
+          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'iro"}' } }] } }] },
+        ])
+        : sseResponse([textChunk("Sunny.")]),
+    async () => {
+      const out = await runTurn({
+        ...base,
+        dispatch: (_n, a) => {
+          seen.push(a);
+          return Promise.resolve("ok");
+        },
+      });
+      assertEquals(seen, [{ city: "Cairo" }]);
+      assertEquals(out.reply, "Sunny.");
     },
   );
 });
 
 Deno.test("loops when the model calls a second tool after the first result", async () => {
   const script = [
-    () => sseResponse([callChunk("get_weather", { city: "A" })]),
-    () => sseResponse([callChunk("get_weather", { city: "B" })]),
+    () => sseResponse([callChunk("get_weather", '{"city":"A"}')]),
+    () => sseResponse([callChunk("get_weather", '{"city":"B"}')]),
     () => sseResponse([textChunk("Done.")]),
   ];
   await withFetch((n) => script[n](), async (reqs) => {
@@ -134,16 +201,14 @@ Deno.test("loops when the model calls a second tool after the first result", asy
       dispatch: (_n, a) => Promise.resolve(a),
     });
     assertEquals(reqs.length, 3);
-    assertEquals(out.calls.map((c) => c.result), [{ city: "A" }, {
-      city: "B",
-    }]);
+    assertEquals(out.calls.map((c) => c.result), [{ city: "A" }, { city: "B" }]);
     assertEquals(out.reply, "Done.");
   });
 });
 
 Deno.test("stops after 5 tool rounds rather than looping forever", async () => {
   await withFetch(
-    () => sseResponse([callChunk("get_weather", {})]),
+    () => sseResponse([callChunk("get_weather", "{}")]),
     async (reqs) => {
       const out = await runTurn({
         ...base,
@@ -196,7 +261,7 @@ Deno.test("an unknown tool name returns an error to the model and the turn conti
   await withFetch(
     (n) =>
       n === 0
-        ? sseResponse([callChunk("nope", {})])
+        ? sseResponse([callChunk("nope", "{}")])
         : sseResponse([textChunk("Sorry, cannot do that.")]),
     async (reqs) => {
       const out = await runTurn({
@@ -204,18 +269,18 @@ Deno.test("an unknown tool name returns an error to the model and the turn conti
         dispatch: (name) => Promise.reject(new Error(`unknown tool ${name}`)),
       });
       assertEquals(out.reply, "Sorry, cannot do that.");
-      const fr = reqs[1].body.contents.at(-1)!.parts[0].functionResponse as {
-        name: string;
-        response: unknown;
-      };
-      assertEquals(fr.name, "nope");
-      assertEquals(fr.response, { error: "unknown tool nope" });
+      const last = reqs[1].body.messages.at(-1)!;
+      assertEquals(last.role, "tool");
+      assertEquals(last.tool_call_id, "call_nope");
+      assertEquals(JSON.parse(String(last.content)), { error: "unknown tool nope" });
     },
   );
 });
 
 Deno.test("malformed tool arguments do not throw out of runTurn", async () => {
-  for (const bad of ["{not json", null, 42, undefined]) {
+  // All four are things the wire can actually carry: a truncated object, an
+  // empty string, and valid JSON that is not an object.
+  for (const bad of ["{not json", "", "null", "42"]) {
     await withFetch(
       (n) =>
         n === 0
@@ -245,11 +310,7 @@ Deno.test("a 429 from the API resolves with a spoken fallback, not a rejection",
       () =>
         new Response(
           JSON.stringify({
-            error: {
-              code: 429,
-              status: "RESOURCE_EXHAUSTED",
-              message: "quota",
-            },
+            error: { code: 429, type: "rate_limit_exceeded", message: "quota" },
           }),
           { status: 429 },
         ),
@@ -302,21 +363,22 @@ Deno.test("a 500 from the API resolves with a spoken fallback, not a rejection",
       globalThis.fetch = orig;
     }
     // missing key
-    Deno.env.delete("GEMINI_API_KEY");
+    Deno.env.delete("OPENAI_API_KEY");
     try {
       await run();
     } finally {
-      Deno.env.set("GEMINI_API_KEY", "test-key-not-real");
+      Deno.env.set("OPENAI_API_KEY", "test-key-not-real");
     }
   } finally {
     console.error = quiet;
   }
 });
 
-// Found in production: gemini-3.5-flash intermittently hangs, and with no
-// deadline the request rode all the way to Supabase's 150s idle timeout. The
-// tablet got nothing at all — worse than a joke that lands badly, because a
-// companion that goes silent for two and a half minutes looks broken.
+// Found in production under the previous provider: the model intermittently
+// hung, and with no deadline the request rode all the way to Supabase's 150s
+// idle timeout. The tablet got nothing at all — worse than a joke that lands
+// badly, because a companion that goes silent for two and a half minutes
+// looks broken. The provider changed; the hazard did not.
 Deno.test("a hanging model resolves with the fallback instead of waiting forever", async () => {
   const original = globalThis.fetch;
   // A faithful stall: never resolves, but honours abort the way a real
@@ -328,6 +390,8 @@ Deno.test("a hanging model resolves with the fallback instead of waiting forever
         () => reject(new DOMException("Aborted", "AbortError")),
       );
     })) as unknown as typeof fetch;
+  const quiet = console.error;
+  console.error = () => {};
   try {
     const started = Date.now();
     const out = await runTurn({
@@ -338,10 +402,10 @@ Deno.test("a hanging model resolves with the fallback instead of waiting forever
       timeoutMs: 300,
     });
     const elapsed = Date.now() - started;
-    assert(out.reply.length > 0, "must still say something");
-    assertEquals(out.calls, []);
-    assert(elapsed < 5000, `should give up promptly, took ${elapsed}ms`);
+    assert(out.reply.length > 0, "it must still say something");
+    assert(elapsed < 5_000, `waited ${elapsed}ms; the deadline did not fire`);
   } finally {
     globalThis.fetch = original;
+    console.error = quiet;
   }
 });

@@ -1,5 +1,10 @@
-// Gemini client: sends the conversation plus tool declarations, runs any tool calls the
+// OpenAI client: sends the conversation plus tool declarations, runs any tool calls the
 // model asks for, feeds results back, and streams the reply out sentence by sentence.
+//
+// Was Gemini until the key ran out of credit. The shape of this file did not
+// change with the provider — the sentence streaming, the deadline and the
+// never-reject contract are about comic timing and about a tablet on a desk,
+// not about whose API is behind it.
 
 export type { Msg } from "./types.ts";
 import type { Msg } from "./types.ts";
@@ -11,27 +16,24 @@ export type ToolSpec = {
 };
 export type ToolResult = { name: string; result: unknown };
 
-// gemini-2.5-flash is closed to new API keys; 3.5-flash is the current
-// equivalent. Overridable by env because model availability has already
-// shifted once under us — this is evidence, not speculation.
 /** Comfortably inside Supabase's 150s idle limit, and far outside a
  * conversational pause. */
 export const DEFAULT_TIMEOUT_MS = 25_000;
 
-const MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-3.5-flash";
-const ENDPOINT =
-  `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:streamGenerateContent?alt=sse`;
+/** The cheapest tier that still calls tools. Overridable by env because model
+ * availability has already shifted under us once — that is evidence, not
+ * speculation. */
+const MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.4-nano";
+const ENDPOINT = Deno.env.get("OPENAI_BASE_URL") ||
+  "https://api.openai.com/v1/chat/completions";
 const MAX_TOOL_ROUNDS = 5;
 
 const FALLBACK =
   "My brain's out of juice for the moment. Give me a little while and ask me again.";
 const EMPTY_FALLBACK = "I got a bit carried away there. Ask me again?";
 
-type Part = {
-  text?: string;
-  thought?: boolean;
-  functionCall?: { name: string; args?: unknown };
-} & Record<string, unknown>;
+/** One tool call, assembled from however many deltas it arrived in. */
+type PendingCall = { id: string; name: string; args: string };
 
 // Splits off complete sentences. A terminator followed by whitespace ends a sentence; a
 // terminator at the very end of the buffer does too (so the last sentence of a chunk is
@@ -58,7 +60,7 @@ async function streamRound(
   onText: (t: string) => void,
   timeoutMs: number,
 ): Promise<
-  { status: number; parts: Part[]; usage: { in: number; out: number } }
+  { status: number; calls: PendingCall[]; usage: { in: number; out: number } }
 > {
   // Without a deadline a slow model rides all the way to the platform's own
   // idle timeout, and the tablet gets nothing at all. Giving up early and
@@ -69,7 +71,12 @@ async function streamRound(
   try {
     res = await fetch(ENDPOINT, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": key },
+      headers: {
+        "content-type": "application/json",
+        // The key travels in a header. Never in the URL, where it would
+        // reach logs and proxies.
+        authorization: `Bearer ${key}`,
+      },
       body: JSON.stringify(body),
       signal: abort.signal,
     });
@@ -78,31 +85,42 @@ async function streamRound(
   }
   if (!res.ok) {
     await res.body?.cancel();
-    return { status: res.status, parts: [], usage: { in: 0, out: 0 } };
+    return { status: res.status, calls: [], usage: { in: 0, out: 0 } };
   }
-  const parts: Part[] = [];
+
+  // Tool calls arrive spread across deltas, keyed by index: the first carries
+  // the id and name, later ones append fragments of the JSON arguments.
+  const byIndex = new Map<number, PendingCall>();
   const usage = { in: 0, out: 0 };
+
   const handle = (event: string) => {
     const data = event.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((
       l,
     ) => l.slice(5).trim()).join("");
-    if (!data) return;
+    if (!data || data === "[DONE]") return;
     let chunk;
     try {
       chunk = JSON.parse(data);
     } catch {
       return;
     }
-    for (const p of chunk.candidates?.[0]?.content?.parts ?? []) {
-      parts.push(p);
-      if (typeof p.text === "string" && !p.thought) onText(p.text);
+    const delta = chunk.choices?.[0]?.delta;
+    if (typeof delta?.content === "string" && delta.content) onText(delta.content);
+    for (const tc of delta?.tool_calls ?? []) {
+      const i = tc.index ?? 0;
+      const acc = byIndex.get(i) ?? { id: "", name: "", args: "" };
+      if (tc.id) acc.id = tc.id;
+      if (tc.function?.name) acc.name = tc.function.name;
+      if (typeof tc.function?.arguments === "string") acc.args += tc.function.arguments;
+      byIndex.set(i, acc);
     }
-    // usageMetadata is cumulative within a request, so keep the latest.
-    if (chunk.usageMetadata) {
-      usage.in = chunk.usageMetadata.promptTokenCount ?? usage.in;
-      usage.out = chunk.usageMetadata.candidatesTokenCount ?? usage.out;
+    // The usage chunk arrives last and is absolute, not cumulative.
+    if (chunk.usage) {
+      usage.in = chunk.usage.prompt_tokens ?? usage.in;
+      usage.out = chunk.usage.completion_tokens ?? usage.out;
     }
   };
+
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buf = "";
   for (;;) {
@@ -113,7 +131,11 @@ async function streamRound(
     for (const e of events) handle(e);
     if (done) break;
   }
-  return { status: res.status, parts, usage };
+  return {
+    status: res.status,
+    calls: [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, c]) => c),
+    usage,
+  };
 }
 
 type TurnOpts = {
@@ -145,13 +167,20 @@ export async function runTurn(opts: TurnOpts): Promise<TurnResult> {
 }
 
 async function converse(opts: TurnOpts): Promise<TurnResult> {
-  const key = Deno.env.get("GEMINI_API_KEY");
+  const key = Deno.env.get("OPENAI_API_KEY");
   if (!key) throw new Error("missing key");
 
-  const contents: unknown[] = opts.history.map((m) => ({
-    role: m.role,
-    parts: [{ text: m.content }],
-  }));
+  // The conversation table stores Gemini's vocabulary ('user' | 'model');
+  // OpenAI says 'assistant'. Translating here keeps the schema, and the
+  // history already in it, untouched.
+  const messages: unknown[] = [
+    { role: "system", content: opts.system },
+    ...opts.history.map((m) => ({
+      role: m.role === "model" ? "assistant" : "user",
+      content: m.content,
+    })),
+  ];
+
   const calls: ToolResult[] = [];
   const spent = { in: 0, out: 0 };
   let pending = "";
@@ -171,17 +200,22 @@ async function converse(opts: TurnOpts): Promise<TurnResult> {
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     const body: Record<string, unknown> = {
-      systemInstruction: { parts: [{ text: opts.system }] },
-      contents,
+      model: MODEL,
+      stream: true,
+      stream_options: { include_usage: true },
+      messages,
     };
     // After the last allowed tool round, ask for a plain answer.
     if (opts.tools.length && round < MAX_TOOL_ROUNDS) {
-      body.tools = [{ functionDeclarations: opts.tools }];
+      body.tools = opts.tools.map((t) => ({
+        type: "function",
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      }));
     }
 
     const r = await streamRound(key, body, onText, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     if (r.status !== 200) {
-      throw new Error(`Gemini request failed with status ${r.status}`);
+      throw new Error(`OpenAI request failed with status ${r.status}`);
     }
     spent.in += r.usage.in;
     spent.out += r.usage.out;
@@ -189,28 +223,43 @@ async function converse(opts: TurnOpts): Promise<TurnResult> {
     pending = "";
     if (raw && !/\s$/.test(raw)) raw += " ";
 
-    const fnCalls = r.parts.flatMap((p) =>
-      p.functionCall ? [p.functionCall] : []
-    );
-    if (!fnCalls.length || round === MAX_TOOL_ROUNDS) break;
+    if (!r.calls.length || round === MAX_TOOL_ROUNDS) break;
 
-    contents.push({ role: "model", parts: r.parts });
-    const responses: Part[] = [];
-    for (const { name, args } of fnCalls) {
+    messages.push({
+      role: "assistant",
+      tool_calls: r.calls.map((c) => ({
+        id: c.id,
+        type: "function",
+        function: { name: c.name, arguments: c.args || "{}" },
+      })),
+    });
+
+    for (const c of r.calls) {
       let response: Record<string, unknown>;
       try {
-        const result = await opts.dispatch(name, args ?? {});
-        calls.push({ name, result });
+        // Arguments arrive as a JSON string assembled from fragments; a
+        // malformed one is the model's mistake to hear about, not a crash.
+        let args: unknown = {};
+        try {
+          args = c.args ? JSON.parse(c.args) : {};
+        } catch {
+          throw new Error("arguments were not valid JSON");
+        }
+        const result = await opts.dispatch(c.name, args);
+        calls.push({ name: c.name, result });
         response = { result };
       } catch (e) {
         // Message only: never a stack, so nothing internal reaches the model or the tablet.
         const error = e instanceof Error ? e.message : String(e);
-        calls.push({ name, result: { error } });
+        calls.push({ name: c.name, result: { error } });
         response = { error };
       }
-      responses.push({ functionResponse: { name, response } });
+      messages.push({
+        role: "tool",
+        tool_call_id: c.id,
+        content: JSON.stringify(response),
+      });
     }
-    contents.push({ role: "user", parts: responses });
   }
 
   const reply = raw.trim();
