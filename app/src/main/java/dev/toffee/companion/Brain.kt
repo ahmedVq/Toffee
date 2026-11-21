@@ -63,6 +63,11 @@ class Brain(
      *  task list. The governor decides whether it is worth saying. */
     suspend fun onIdleCheck() = ask { agent.event("idle_check", emptyMap()) }
 
+    /** He has not moved in a while. The backend buckets this by the hour, so
+     *  each hour earns at most one remark however often it is reported. */
+    suspend fun onStillHere(minutes: Int) =
+        ask { agent.event("still_here", mapOf("minutes" to minutes)) }
+
     /** He said something. */
     suspend fun say(text: String) {
         if (!usable()) return inert()

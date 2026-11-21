@@ -12,6 +12,11 @@
          no Settings app on this tablet to grant it from afterwards. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Presence only. Face DETECTION, never recognition, and no frame ever
+         leaves the tablet. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"

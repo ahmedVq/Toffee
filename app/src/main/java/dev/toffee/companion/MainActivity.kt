@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.widget.FrameLayout
@@ -24,6 +25,9 @@ import dev.toffee.companion.net.Session
 import dev.toffee.companion.net.SessionState
 import dev.toffee.companion.net.ToffeeClient
 import dev.toffee.companion.net.ToffeeHttp
+import dev.toffee.companion.presence.CameraEye
+import dev.toffee.companion.presence.Presence
+import dev.toffee.companion.presence.PresenceReporter
 import dev.toffee.companion.reminders.AlarmScheduler
 import dev.toffee.companion.reminders.Mirror
 import dev.toffee.companion.reminders.MirrorDao
@@ -53,7 +57,8 @@ import java.time.ZonedDateTime
  * an alarm. What to say and when lives in Brain, which has its own tests and
  * no Android in it.
  *
- * A tap opens the microphone; the camera is still to come.
+ * A tap opens the microphone; the front camera decides whether he is
+ * there at all.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -63,6 +68,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var session: Session
     private lateinit var voice: AndroidVoice
     private lateinit var ears: Ears
+    private val presence = Presence()
+    private var eye: CameraEye? = null
 
     private val ui = Handler(Looper.getMainLooper())
     private var brightnessTick: Runnable? = null
@@ -102,7 +109,11 @@ class MainActivity : AppCompatActivity() {
         // device that is not yet Device Owner the dialog is out of the way
         // before he ever touches the face. As Device Owner it is granted
         // outright and nothing is shown at all.
-        Kiosk.grantOwnPermissions(this, Manifest.permission.RECORD_AUDIO)
+        Kiosk.grantOwnPermissions(
+            this,
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CAMERA,
+        )
         wireMaintenanceGate()
         startBrightnessTicker()
         face.wake()
@@ -152,7 +163,10 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        lifecycleScope.launch { brain.onArrival() }
+        // Who says he has arrived: the camera if there is one, otherwise the
+        // fact that the app just started. Both would greet him twice — once
+        // on launch and again six seconds later when the eye caught up.
+        if (!startWatching()) lifecycleScope.launch { brain.onArrival() }
         startPolling(dao)
         listenForAlarms()
 
@@ -197,6 +211,8 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         ReminderAlarmReceiver.listener = null
         if (::voice.isInitialized) voice.shutdown()
+        eye?.stop()
+        eye = null
         // A self-reposting Runnable holding the Activity outlives finish()
         // otherwise — and on the signed-out path this Activity finishes
         // immediately, so it would have leaked every launch.
@@ -251,6 +267,55 @@ class MainActivity : AppCompatActivity() {
             // The flow completes only when the identity is gone.
             brain.refreshSessionState()
         }
+    }
+
+    /**
+     * The front camera, and what it is allowed to mean.
+     *
+     * Without the permission the eye simply does not start: presence stays
+     * unknown and the brightness policy falls back to the clock, which is
+     * what it did before there was a camera at all. A tablet that dims at
+     * noon because it wrongly believes the room is empty would be worse than
+     * one that never looks.
+     *
+     * @return whether the camera is now watching, which is also the answer
+     *         to "is anything else going to tell Brain he arrived".
+     */
+    private fun startWatching(): Boolean {
+        if (!Kiosk.granted(this, Manifest.permission.CAMERA)) {
+            Log.w(TAG, "no camera permission; presence stays unknown")
+            return false
+        }
+
+        val reporter = PresenceReporter(
+            http = ToffeeHttp.client(),
+            baseUrl = ToffeeConfig.baseUrl,
+            apiKey = ToffeeConfig.publishableKey,
+            session = session,
+        )
+
+        eye = CameraEye(this, this) { faces, atMs ->
+            val change = presence.sample(faces, atMs) ?: return@CameraEye
+            lifecycleScope.launch {
+                when (change) {
+                    is Presence.Change.Arrived -> {
+                        reporter.report(present = true, atMs = atMs, durationS = null)
+                        brain.onArrival()
+                    }
+                    is Presence.Change.Left -> {
+                        reporter.report(
+                            present = false,
+                            atMs = atMs,
+                            durationS = change.afterMinutes * 60,
+                        )
+                        brain.onDeparture()
+                    }
+                    is Presence.Change.StillHere -> brain.onStillHere(change.minutes)
+                }
+            }
+        }
+        eye?.start()
+        return true
     }
 
     /** The route that works with the router unplugged. */
@@ -319,8 +384,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Presence arrives in Plan 3; until then the policy is driven by the
-     *  clock alone, which is what makes it stop glowing at 3am. */
+    /**
+     * The panel's brightness, once a minute.
+     *
+     * Now driven by the camera as the spec intended. With no camera
+     * permission both values are null, which BrightnessPolicy reads as "no
+     * one has ever been seen" — the clock-only behaviour this had before.
+     */
     private fun startBrightnessTicker() {
         val tick = object : Runnable {
             override fun run() {
@@ -328,8 +398,8 @@ class MainActivity : AppCompatActivity() {
                 Kiosk.apply(
                     this@MainActivity,
                     BrightnessPolicy.levelFor(
-                        presentSinceMs = now,
-                        lastSeenMs = now,
+                        presentSinceMs = presence.presentSinceMs,
+                        lastSeenMs = presence.lastSeenMs,
                         nowMs = now,
                         localHour = ZonedDateTime.now(ZoneId.of(TIMEZONE)).hour,
                     ),
@@ -342,6 +412,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private companion object {
+        const val TAG = "Toffee"
         const val TIMEZONE = "Africa/Cairo"
 
 

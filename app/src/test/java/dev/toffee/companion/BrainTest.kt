@@ -452,4 +452,17 @@ class BrainTest {
         assertTrue(brain.state.value.line!!.isNotBlank())
         assertTrue("there is no Settings app to find this out in", voice.said.isNotEmpty())
     }
+
+    @Test
+    fun `sitting there for an hour is an event the agent can remark on`() = runTest {
+        val agent = FakeAgent().apply { reply = Reply("Ninety minutes. Impressive, in a way.", Mood.SMUG) }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this)
+
+        brain.onStillHere(90)
+        advanceTimeBy(1_000)
+
+        assertEquals(listOf("still_here"), agent.events.map { it.first })
+        assertEquals(90, agent.events[0].second["minutes"])
+        assertEquals(Mood.SMUG, brain.state.value.mood)
+    }
 }
