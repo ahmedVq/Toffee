@@ -386,6 +386,12 @@ class LiveBackendTest {
             s,
         )
 
+        // The prompt is fixed, and must stay fixed. This number is compared
+        // against previous runs to decide whether a change made him faster
+        // or slower; asking him something else makes it a different
+        // measurement wearing the same name. Briefly replaced with a memory
+        // probe, which produced a much longer reply and an apparent 2.3s
+        // regression that was really just more tokens.
         val started = System.currentTimeMillis()
         val reply = client.turn("Say one short sentence back to me.")
         val took = System.currentTimeMillis() - started
@@ -399,6 +405,43 @@ class LiveBackendTest {
 
         assertFalse("the agent was unreachable, so this measures nothing", reply.offline)
         assertTrue("a turn took " + took + "ms, which is past any comic timing", took < 20_000)
+    }
+
+    /**
+     * The seeded history actually reaches the model.
+     *
+     * Unit tests prove `renderSystem` prints the facts and `buildContext`
+     * fetches them. Neither can prove the assembled prompt reached a real
+     * model and came back with him using it — which is the only form of
+     * "he knows who Ahmed is" that counts.
+     *
+     * Deliberately not the benchmark: this asks an open question and gets a
+     * long answer, which is a fine thing to read and a useless thing to time.
+     */
+    @Test
+    fun heKnowsWhoAhmedIs() = runBlocking {
+        val s = session()
+        assumeTrue("the tablet is not signed in", s.state() == SessionState.Active)
+
+        val reply = dev.toffee.companion.net.ToffeeClient(
+            ToffeeHttp.client(),
+            ToffeeConfig.baseUrl,
+            ToffeeConfig.publishableKey,
+            s,
+        ).turn("In one sentence: what do you know about me?")
+
+        context.getSharedPreferences("toffee.bench", android.content.Context.MODE_PRIVATE)
+            .edit().putString("knows", reply.speak ?: "(silence)").apply()
+
+        assumeTrue("the agent was unreachable", !reply.offline)
+        val said = (reply.speak ?: "").lowercase()
+        // Any one of the seeded facts. Asserting on a particular one would
+        // be asserting on the model's choice of material, which is his.
+        val touchstones = listOf("ahmed", "free tier", "office", "task list", "tablet", "later")
+        assertTrue(
+            "he answered without using anything he was told about Ahmed: " + reply.speak,
+            touchstones.any { it in said },
+        )
     }
 
     @Test
