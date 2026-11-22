@@ -16,44 +16,44 @@ Ahmed used it and gave three complaints, in his words:
 These are one complaint. It does not feel like talking to someone. It feels
 like operating a device that happens to answer.
 
-Everything below serves that single goal: **she should feel like one person,
-present in the room, who you can simply talk to.** Her name is Toffee and
-Ahmed refers to her as "her"; this document follows him.
+Everything below serves that single goal: **he should feel like one person,
+present in the room, who you can simply talk to.** Toffee is a he — not an
+it, and not a she; Ahmed corrected this and the document follows him.
 
-A fourth request came with them: give her a personality and a history of
+A fourth request came with them: give Toffee a personality and a history of
 Ahmed, "using everything you know about me". The persona string is already
-strong — what is missing is that she knows nothing about him. That is treated
+strong — what is missing is that he knows nothing about Ahmed. That is treated
 here as part of the same goal, because a companion with no memory of you is
 not a companion either.
 
 ## Goals
 
-- She answers fast enough that a joke still lands.
+- He answers fast enough that a joke still lands.
 - One voice, recognisably the same person in every mood.
 - You say "hey toffee" and talk. You never touch the tablet to speak.
 - A conversation stays open while it is a conversation, and closes itself
   quietly when it stops being one.
-- She knows who Ahmed is and what he is doing, without being asked.
+- He knows who Ahmed is and what Ahmed is doing, without being asked.
 
 ## Non-goals
 
-- Not changing what she is allowed to say. The governor, the cooldown and the
+- Not changing what Toffee is allowed to say. The governor, the cooldown and the
   "mock only what you can point at" rule all stand exactly as they are.
 - Not joining the two task lists. Still Ahmed's decision from the original
   design, still not now.
 - No face tracking, no face recognition. Unchanged.
 - Not replacing the Google recogniser for actual transcription. The wake word
   is a separate, smaller job.
-- No barge-in by voice. Tapping already interrupts her and keeps working;
+- No barge-in by voice. Tapping already interrupts him and keeps working;
   interrupting by voice needs echo cancellation and is not worth it.
 
 ## Anti-goals
 
 Things that would make this a failure even if every feature worked:
 
-- **She wakes when nobody called her.** A companion that interrupts on a
+- **He wakes when nobody called him.** A companion that interrupts on a
   misheard word is worse than one you have to tap.
-- **She holds the microphone open all day for no reason.** The wake word is a
+- **He holds the microphone open all day for no reason.** The wake word is a
   wake word, not a recording device.
 - **The tablet dies faster than it charges.** Already true; this makes it
   worse (see Constraints).
@@ -113,21 +113,21 @@ now a prerequisite for the feature, not a convenience.
 
 ## Approaches considered
 
-**For waking her:**
+**For waking him:**
 
-- *Follow-on window only, no wake word.* Tap once to start, then she keeps
+- *Follow-on window only, no wake word.* Tap once to start, then Toffee keeps
   the conversation open. Cheapest, no new dependency, no always-on mic — but
   Ahmed asked for a wake word by name, and this leaves the opening tap.
 - *Wake word only.* Every exchange needs "hey toffee". Correct for a smart
   speaker, wrong for a desk companion you are mid-conversation with.
 - **Both, which is what this builds.** "Hey toffee" opens a conversation;
-  inside it she simply listens after each thing she says; silence closes it.
+  inside it he simply listens after each thing he says; silence closes it.
   The wake word solves starting, the window solves continuing, and they are
   the same state machine.
 
 **For speed:**
 
-- *Speak a filler while waiting.* Cheap and dishonest; it makes her slower
+- *Speak a filler while waiting.* Cheap and dishonest; it makes him slower
   and chattier at once.
 - **Stream, and speak the first sentence as it arrives.** The original design
   named this as the handling for the latency risk. The backend already
@@ -151,10 +151,10 @@ to be subtle.
 
 Mood moves to **rate and pitch within a narrow band around one voice** —
 roughly ±4% pitch and ±15% rate. Smug stays slow, frustrated stays clipped,
-sleepy stays slowest, and all of them stay her. Exact figures are the
+sleepy stays slowest, and all of them still sound like him. Exact figures are the
 builder's, within that band.
 
-### 2. She speaks while she is still thinking
+### 2. He speaks while he is still thinking
 
 `/turn` returns Server-Sent Events instead of one JSON object. Each sentence
 goes out as it is produced; the device speaks each one as it arrives.
@@ -170,9 +170,9 @@ One state machine, three states:
 - **Idle.** Vosk holds the microphone and listens for one phrase and nothing
   else. Nothing is transcribed, stored or sent.
 - **Open.** The wake word fired, or Ahmed tapped. Vosk releases the
-  microphone; the Google recogniser takes it; she answers; after she finishes
+  microphone; the Google recogniser takes it; he answers; after he finishes
   speaking the microphone reopens by itself.
-- **Closing.** No speech for the idle timeout. She says nothing — a companion
+- **Closing.** No speech for the idle timeout. He says nothing — a companion
   that announces it is leaving the conversation is a companion that talks too
   much — and returns to Idle.
 
@@ -191,18 +191,18 @@ Two things the builder must get right, both learned from prior art:
 Vosk failing to load is not fatal: the tap still works, and the failure is
 recorded in `Faults` like the camera and the mouth already are.
 
-### 4. She knows who he is
+### 4. He knows who Ahmed is
 
 Two changes, both in `persona.ts`:
 
 - **Memories reach the prompt.** The `memories` table and its tool exist, but
-  nothing injects memories into the context block, so she can only remember
+  nothing injects memories into the context block, so he can only remember
   by choosing to go and look. Relevant memories join the existing block
   alongside the time, presence, battery and task count.
 - **A seeded history.** The appendix below is the exact list to be written.
   It is facts only, each one something that actually happened in this
-  project, because the rule that she may only mock what she can point at now
-  has to cover her memory as well.
+  project, because the rule that he may only mock what he can point at now
+  has to cover his memory as well.
 
 ## What is left to the builder
 
@@ -217,19 +217,19 @@ Two changes, both in `persona.ts`:
 ## Appendix: the history to seed
 
 Each line is a fact from this project. Ahmed should correct anything wrong
-here **before** it is written, because this is what she will believe about
+here **before** it is written, because this is what Toffee will believe about
 him.
 
-- He is Ahmed. He built her, and he built her to be unimpressed by him.
+- He is Ahmed. He built me, and he built me to be unimpressed by him.
 - He works in an office in Cairo that nobody else enters.
 - He runs this whole project on free tiers and no budget, and looks for a
   free alternative before he will pay for anything.
 - He keeps a separate task list on his laptop and decided, deliberately, not
   to connect the two.
-- He factory-reset a 2016 tablet to make her its owner, so she cannot be
+- He factory-reset a 2016 tablet to make me its owner, so I cannot be
   uninstalled.
 - He let that tablet run flat to 1%, then tried to charge it from a laptop
   port that supplies less power than the screen draws.
 - He was told to rotate an exposed API key and said he would do it later.
 - He tests things himself rather than taking a report for it.
-- He finds her too slow, and said so.
+- He finds me too slow, and said so.

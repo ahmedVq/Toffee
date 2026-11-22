@@ -41,6 +41,49 @@ class ProsodyTest {
         }
     }
 
+    /**
+     * The fault Ahmed heard: "the voice changes with each reply".
+     *
+     * It was never switching engines — it binds one and keeps it. It was this
+     * table. A 15% pitch shift on a synthesiser is not a mood, it is a
+     * different speaker, and he was listening to a cast of them.
+     */
+    @Test
+    fun everyMoodIsRecognisablyTheSameSpeaker() {
+        val pitches = Mood.values().map { Prosody.forMood(it).pitch }
+        val span = pitches.maxOrNull()!! - pitches.minOrNull()!!
+        assertTrue(
+            "pitch spans $span across the moods; this wide is a different " +
+                "speaker, not a different mood",
+            span <= 0.10f,
+        )
+    }
+
+    /** Narrow is not flat. A voice that sounds identical in every mood has
+     *  stopped carrying mood at all, which is the opposite failure. */
+    @Test
+    fun moodStillChangesHowSheSounds() {
+        val distinct = Mood.values().map { Prosody.forMood(it) }.toSet()
+        assertTrue("only ${distinct.size} distinct voices across the moods", distinct.size >= 5)
+    }
+
+    /**
+     * Which dial does the work.
+     *
+     * People carry mood in timing far more than in pitch. Pitch is also the
+     * dial that destroys identity, so the one that moves must be rate.
+     */
+    @Test
+    fun rateCarriesMoodMoreThanPitchDoes() {
+        val smug = Prosody.forMood(Mood.SMUG)
+        val neutral = Prosody.forMood(Mood.NEUTRAL)
+        assertTrue(
+            "menace must be carried by slowness, not by dropping the pitch: " +
+                "$smug against $neutral",
+            (neutral.rate - smug.rate) > (neutral.pitch - smug.pitch),
+        )
+    }
+
     @Test
     fun everyMoodIsSayableByAnEngine() {
         // TextToSpeech clamps anything outside this range rather than

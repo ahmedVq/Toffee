@@ -3,11 +3,11 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make talking to Toffee feel like talking to one person — fast, one
-voice, no tapping, and she knows who Ahmed is.
+voice, no tapping, and he knows who Ahmed is.
 
 **Architecture:** Five seams already exist and all five are reused rather than
 replaced: `Voice` (the mouth), `Ears` (listening), `Agent` (the backend),
-`Prosody` (mood → sound) and `persona.ts` (who she is). The wake word is a
+`Prosody` (mood → sound) and `persona.ts` (who he is). The wake word is a
 sixth seam of the same shape — a pure phrase matcher plus a thin Android
 implementation — so that everything except the Vosk binding stays unit
 testable off the device.
@@ -29,7 +29,7 @@ armeabi-v7a only), Deno / Supabase Edge Functions, OkHttp, Vosk
 - **Nothing throws at the user.** Every failure becomes a sentence on the
   face or a line in `Faults`, never a dialog and never a crash. The app is
   the HOME activity; a crash loop is a brick.
-- **She may only claim what she can point at.** This now covers memory as
+- **He may only claim what he can point at.** This now covers memory as
   well as the live context.
 - Silence stays the default. The governor, the cooldown and
   `ALWAYS_SPEAK_PREFIX` are untouched by this plan.
@@ -40,19 +40,19 @@ armeabi-v7a only), Deno / Supabase Edge Functions, OkHttp, Vosk
 Five things the design implies that no task's own tests exercise. Each has a
 test attached to the task that owns the code.
 
-1. **She wakes herself.** Her own voice leaves the speaker and arrives at the
-   microphone; "hey toffee" inside her own sentence must not re-trigger her.
+1. **He wakes himself.** His own voice leaves the speaker and arrives at the
+   microphone; "hey toffee" inside his own sentence must not re-trigger him.
    Task 6.
 2. **The microphone is never given back.** Any path out of listening that
    skips releasing it — an exception, a timeout, a closed conversation —
    leaves the next wake recording silence for ever. Task 6.
 3. **A stream that dies halfway.** The connection drops after two sentences:
-   she must not be left mid-thought with no mood and no reply recorded.
+   he must not be left mid-thought with no mood and no reply recorded.
    Task 3 and Task 4.
-4. **The conversation closes while she is still talking.** The idle timer
+4. **The conversation closes while he is still talking.** The idle timer
    must measure silence between *exchanges*, not wall-clock since the wake,
    or a long answer closes the conversation it is still answering. Task 5.
-5. **A seeded memory that is no longer true.** "He finds her too slow" is a
+5. **A seeded memory that is no longer true.** "He finds me too slow" is a
    fact today and a lie the week after this ships. Seeded history must be
    distinguishable from live context and correctable. Task 2.
 
@@ -163,7 +163,7 @@ git commit -m "fix: one voice, not a cast of them"
 
 ---
 
-### Task 2: She knows who he is
+### Task 2: He knows who Ahmed is
 
 **Files:**
 - Modify: `supabase/functions/_shared/persona.ts`
@@ -188,8 +188,8 @@ neither duplicates nor resurrects a deleted line.
 
 ```ts
 Deno.test("core facts reach the prompt without being asked for", () => {
-  const prompt = renderSystem({ ...baseCtx, coreFacts: ["He built her to be unimpressed by him."] });
-  assertStringIncludes(prompt, "He built her to be unimpressed by him.");
+  const prompt = renderSystem({ ...baseCtx, coreFacts: ["He built me to be unimpressed by him."] });
+  assertStringIncludes(prompt, "He built me to be unimpressed by him.");
 });
 
 Deno.test("a prompt with no memories says so rather than pretending", () => {
@@ -240,7 +240,7 @@ Expected: PASS, 117 existing tests included.
 
 ```bash
 git add supabase/functions/_shared/persona.ts supabase/functions/_shared/types.ts scripts/seed-memories.ts tests/persona.test.ts
-git commit -m "feat: she remembers who he is"
+git commit -m "feat: he remembers who Ahmed is"
 ```
 
 ---
@@ -353,7 +353,7 @@ sentence cut off the one before. `interrupt = false` must map to
 
 **`speaking` must stay true between queued sentences.** It is set from
 `onDone`, which fires per utterance, so sentence one finishing would report
-her as silent while sentence two is still queued — and `onTap` reads exactly
+him as silent while sentence two is still queued — and `onTap` reads exactly
 that flag to decide between hushing and listening. Track outstanding
 utterances, not the last one.
 
@@ -407,7 +407,7 @@ Expected: PASS, all 213 existing tests included.
 
 ```bash
 git add app/src/main/java/dev/toffee/companion/net/Sse.kt app/src/main/java/dev/toffee/companion/voice/ app/src/main/java/dev/toffee/companion/net/ToffeeClient.kt app/src/main/java/dev/toffee/companion/Brain.kt app/src/test/
-git commit -m "feat: she starts talking before she has finished thinking"
+git commit -m "feat: he starts talking before he has finished thinking"
 ```
 
 ---
@@ -443,7 +443,7 @@ All times are `SystemClock.elapsedRealtime()` — never wall clock, which jumps
 when the RTC is corrected after a power cut. This bit the brightness ticker
 already.
 
-`exchange` is called when he speaks **and** when she finishes speaking. That
+`exchange` is called when Ahmed speaks **and** when Toffee finishes speaking. That
 is Review Focus 4: a forty-second answer must not age the conversation out
 from under itself.
 
@@ -458,8 +458,8 @@ fun aLongAnswerDoesNotAgeOutTheConversationItIsAnswering() {
     // Review Focus 4.
     c.open(0)
     c.exchange(1_000)    // he spoke
-    c.exchange(95_000)   // she finally stopped speaking
-    assertTrue("closed while she was still answering", c.isOpen(96_000))
+    c.exchange(95_000)   // he finally stopped speaking
+    assertTrue("closed while he was still answering", c.isOpen(96_000))
 }
 
 @Test fun closingIsIdempotentAndSurvivesAReopen() { /* ... */ }
@@ -472,10 +472,10 @@ Expected: FAIL — `Conversation` not defined.
 
 - [ ] **Step 3: Implement `Conversation` and wire it into `MainActivity`**
 
-A tap opens the conversation. After `Heard.Words` and after she stops
+A tap opens the conversation. After `Heard.Words` and after he stops
 speaking, `exchange`. While `isOpen`, reopen the microphone instead of
 returning to idle. `Heard.Nothing` inside an open conversation re-listens if
-still open and closes silently otherwise — she never announces that she is
+still open and closes silently otherwise — he never announces that he is
 leaving the conversation.
 
 - [ ] **Step 4: Run the unit suite**
@@ -564,7 +564,7 @@ fun somethingThatMerelyContainsTheWordDoesNot() {
 
 @Test
 fun herOwnSentenceDoesNotWakeHer() {
-    // Review Focus 1: her voice reaches her own microphone.
+    // Review Focus 1: his voice reaches his own microphone.
     assertFalse(WakePhrase.heard("you said hey toffee twice already"))
 }
 ```
@@ -588,7 +588,7 @@ working.
 In `MainActivity`: `wake.stop()` before `ears.listen()`, `wake.start()` after
 the conversation closes, in a `finally` that covers the exception, timeout
 and closed-conversation paths alike. The second half of Review Focus 1 is
-here too: stop the wake listener while she is speaking.
+here too: stop the wake listener while he is speaking.
 
 - [ ] **Step 6: Raise the download budget**
 
@@ -613,7 +613,7 @@ Expected: PASS.
 
 ```bash
 git add app/src/main/java/dev/toffee/companion/voice/ app/src/main/java/dev/toffee/companion/update/Updater.kt app/build.gradle.kts app/src/main/java/dev/toffee/companion/MainActivity.kt app/src/test app/src/androidTest
-git commit -m "feat: she answers to her name"
+git commit -m "feat: he answers to his name"
 ```
 
 ---
@@ -622,14 +622,14 @@ git commit -m "feat: she answers to her name"
 
 None of these can be settled off the device, and all of them need Ahmed:
 
-- **She sounds like one person.** Ask her four things that land in different
-  moods and listen for whether it is still her.
-- **"Hey toffee" works across the room**, and does not fire while she is
+- **He sounds like one person.** Ask him four things that land in different
+  moods and listen for whether it is still him.
+- **"Hey toffee" works across the room**, and does not fire while he is
   talking, or while Ahmed is on a phone call.
 - **The conversation holds.** Say three things in a row without touching the
-  tablet, then stay quiet and confirm she lets it go without comment.
+  tablet, then stay quiet and confirm he lets it go without comment.
 - **Speed.** The number to beat is 4.7 s end to end; the target is about 2 s
-  to her first word. `toffee.bench` already records turn timings.
+  to his first word. `toffee.bench` already records turn timings.
 - **Battery under continuous listening.** The number that decides whether
   this is viable at all. **Needs a mains adapter before it can be measured.**
 - **The self-update still works at 56 MB**, using the same staged
