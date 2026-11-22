@@ -232,6 +232,106 @@ class LiveBackendTest {
     }
 
     /**
+     * And that it can fetch the file that row points at.
+     *
+     * The build lives in a private Storage bucket, so reading the row and
+     * reading the bytes are two different permissions. Without the second
+     * one the maintenance screen says "Could not download version N" — which
+     * reads as a network fault and is actually a policy that was never
+     * written. Asks for the first kilobyte rather than the whole APK: this
+     * is a question about permission, not about bandwidth.
+     */
+    @Test
+    fun theTabletCanFetchTheBuildItWasToldAbout() = runBlocking {
+        val pw = password
+        val s = session()
+        if (s.state() != SessionState.Active) {
+            assumeTrue("no credential; skipping", pw != null)
+            assertTrue(s.signIn(email, pw!!).isSuccess)
+        }
+        val token = s.accessToken()
+        assertTrue("no access token", token != null)
+
+        val rows = ToffeeHttp.client(10_000).newCall(
+            okhttp3.Request.Builder()
+                .url(ToffeeConfig.baseUrl + "/rest/v1/app_release?select=url&active=eq.true")
+                .addHeader("apikey", ToffeeConfig.publishableKey)
+                .addHeader("Authorization", "Bearer " + token)
+                .get()
+                .build(),
+        ).execute().use { it.body?.string().orEmpty() }
+
+        val url = Regex("\"url\":\"([^\"]+)\"").find(rows)?.groupValues?.get(1)
+        assumeTrue("no active release row to fetch; skipping", url != null)
+
+        // The client the Updater itself uses. At 10s this timed out against
+        // Storage before it had an answer to report, which is a measurement
+        // of the tablet's radio rather than of the policy.
+        ToffeeHttp.client().newCall(
+            okhttp3.Request.Builder()
+                .url(url!!)
+                .addHeader("apikey", ToffeeConfig.publishableKey)
+                .addHeader("Authorization", "Bearer " + token)
+                .addHeader("Range", "bytes=0-1023")
+                .get()
+                .build(),
+        ).execute().use {
+            val body = it.body?.string().orEmpty()
+            assertTrue(
+                "the device may read the release row but not the build it names: " +
+                    "HTTP " + it.code + " " + body,
+                it.code == 200 || it.code == 206,
+            )
+        }
+    }
+
+    /**
+     * The whole self-update path, end to end, against a build staged to be
+     * refused.
+     *
+     * [dev.toffee.companion.update.Install] is pure and unit-tested, but
+     * every one of those tests hands it a `Downloaded` built by hand. This is
+     * the only thing that proves the rule fires on bytes that actually
+     * crossed the network and an APK Android actually parsed — and that the
+     * 16MB transfer finishes inside the Updater's own timeout, which is the
+     * difference between a real refusal and "could not download".
+     *
+     * Safe to run: the active row claims version 2 and the file it points at
+     * is version 1, so two separate rules refuse it before `install()` is
+     * reached. Nothing is installed.
+     */
+    @Test
+    fun theUpdateGateRefusesABuildThatLiesAboutItsVersion() = runBlocking {
+        val pw = password
+        val s = session()
+        if (s.state() != SessionState.Active) {
+            assumeTrue("no credential; skipping", pw != null)
+            assertTrue(s.signIn(email, pw!!).isSuccess)
+        }
+
+        val started = System.currentTimeMillis()
+        val said = dev.toffee.companion.update.Updater(
+            http = ToffeeHttp.client(),
+            baseUrl = ToffeeConfig.baseUrl,
+            apiKey = ToffeeConfig.publishableKey,
+            session = s,
+            context = context,
+        ).check()
+        val took = System.currentTimeMillis() - started
+
+        // Recorded where a passing run can still show it: this is the number
+        // that says whether a real update could ever complete on this radio.
+        context.getSharedPreferences("toffee.bench", android.content.Context.MODE_PRIVATE)
+            .edit().putLong("update_ms", took).putString("update_said", said).apply()
+
+        assumeTrue("no build staged to check; skipping", !said.startsWith("Nothing new"))
+        assertTrue(
+            "the gate let a mislabelled build through, or never got to it: " + said,
+            said.contains("says version 1") && said.contains("published as 2"),
+        )
+    }
+
+    /**
      * The stored identity is readable by a fresh [Session] over the same
      * Keystore.
      *
