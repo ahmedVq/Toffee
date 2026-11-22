@@ -24,3 +24,7 @@ Thumbs.db
 
 # brainstorm server scratch
 .superpowers/
+
+# The Vosk wake-word model: 68MB of binary, fetched by
+# scripts/fetch-vosk-model.sh rather than carried in git history.
+app/src/main/assets/vosk-model-en-us/

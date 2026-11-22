@@ -92,6 +92,10 @@ dependencies {
     // Bundled, not the Play Services variant: the tablet has no
     // Google account and must not need one to see that he is there.
     implementation(libs.mlkit.face.detection)
+    // The wake word. Offline, Apache-2.0, and -- the reason it is here
+    // rather than Picovoice -- no account and no key that a vendor can
+    // switch off, which is what happened to Porcupine's free tier.
+    implementation(libs.vosk.android)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)

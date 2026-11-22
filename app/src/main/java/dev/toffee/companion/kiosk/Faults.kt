@@ -24,6 +24,11 @@ object Faults {
     const val CAMERA = "camera"
     const val EARS = "ears"
 
+    /** The wake word. Its own subsystem because it fails independently of
+     *  [EARS] — the microphone can work perfectly while the model fails to
+     *  load, and the symptom is only that he never answers to his name. */
+    const val WAKE = "wake"
+
     fun record(context: Context, subsystem: String, message: String) {
         store(context).edit().putString(subsystem, message).apply()
     }
@@ -33,6 +38,11 @@ object Faults {
     fun clear(context: Context, subsystem: String) {
         store(context).edit().remove(subsystem).apply()
     }
+
+    /** What is wrong with one subsystem, or null if nothing is. Lets a test
+     *  ask about the live app rather than about a copy it made itself. */
+    fun current(context: Context, subsystem: String): String? =
+        store(context).getString(subsystem, null)
 
     /** Everything currently broken, in a fixed order so the screen does not
      *  reshuffle itself between visits. */

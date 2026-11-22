@@ -9,6 +9,7 @@ import dev.toffee.companion.kiosk.Kiosk
 import dev.toffee.companion.net.Session
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -136,6 +137,16 @@ class Updater(
     private fun download(url: String, into: File, token: String): String? = runCatching {
         val digest = MessageDigest.getInstance("SHA-256")
         val builder = Request.Builder().url(url).get()
+        // Its own client, because OkHttp's call timeout covers the whole
+        // transfer and the default is tuned for a conversational turn.
+        // Measured on this tablet: 16MB took 14.9s of a 25s budget, and the
+        // APK is now several times that with the wake-word model bundled —
+        // so the default would abort every update partway and report it as
+        // a network failure.
+        val slow = http.newBuilder()
+            .callTimeout(DOWNLOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(DOWNLOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build()
         // Only to our own project, and only so that a private Storage bucket
         // works. Sending the tablet's token to a third-party host would hand
         // that host the tablet's identity.
@@ -143,7 +154,7 @@ class Updater(
             builder.addHeader("apikey", apiKey).addHeader("Authorization", "Bearer $token")
         }
 
-        http.newCall(builder.build()).execute().use { res ->
+        slow.newCall(builder.build()).execute().use { res ->
             if (!res.isSuccessful) return null
             val body = res.body ?: return null
             into.outputStream().use { out ->
@@ -226,5 +237,14 @@ class Updater(
 
     private companion object {
         val LENIENT = Json { ignoreUnknownKeys = true; isLenient = true }
+
+        /**
+         * Long enough for a whole APK on this tablet's Wi-Fi, with room for
+         * a bad day. 16MB measured at 14.9s, and the bundled wake-word model
+         * takes the APK several times past that; five minutes is generous
+         * rather than tuned, which is the right side to err on for something
+         * that only runs when someone presses a button.
+         */
+        const val DOWNLOAD_TIMEOUT_MS = 300_000L
     }
 }

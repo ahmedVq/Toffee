@@ -46,6 +46,9 @@ import dev.toffee.companion.voice.Conversation
 import dev.toffee.companion.voice.DeviceEars
 import dev.toffee.companion.voice.Ears
 import dev.toffee.companion.voice.Heard
+import dev.toffee.companion.voice.SilentWakeWord
+import dev.toffee.companion.voice.VoskWakeWord
+import dev.toffee.companion.voice.WakeWord
 import dev.toffee.companion.voice.bestEars
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -73,6 +76,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ears: Ears
     private val presence = Presence()
     private val conversation = Conversation()
+
+    /** Silent until the model loads, and silent for good if it cannot:
+     *  the tap is the fallback, and it is what Ahmed has today. */
+    private var wake: WakeWord = SilentWakeWord
     private var eye: CameraEye? = null
     private var greeted = false
 
@@ -178,6 +185,7 @@ class MainActivity : AppCompatActivity() {
         // Who says he has arrived: the camera if there is one, otherwise the
         // fact that the app just started. Both would greet him twice — once
         // on launch and again six seconds later when the eye caught up.
+        startListeningForHisName()
         if (!startWatching()) greetOnce()
         startPolling(dao)
         listenForAlarms()
@@ -193,6 +201,45 @@ class MainActivity : AppCompatActivity() {
      * tap while it is already listening is a double-tap, and starting a
      * second recognition on top of the first would lose both.
      */
+    /**
+     * "Hey toffee" opens a conversation, so Ahmed never has to touch it.
+     *
+     * Failing is not fatal and is not silent: the tap still works, and the
+     * reason goes where the maintenance screen will show it, because on this
+     * ROM the app's logs reach nobody.
+     */
+    private fun startListeningForHisName() {
+        if (!Kiosk.granted(this, Manifest.permission.RECORD_AUDIO)) {
+            Faults.record(this, Faults.WAKE, "No microphone, so I can't hear my name.")
+            return
+        }
+        val listener = VoskWakeWord(
+            context = this,
+            onWake = {
+                // Review Focus 1: his own voice comes back through his own
+                // microphone, and he is specifically prone to repeating what
+                // was said to him. While he is talking, he is not listening
+                // for his name. WakePhrase handles being discussed; this
+                // handles being quoted by himself.
+                if (!voice.speaking) runOnUiThread { onWoken() }
+            },
+            onUnavailable = { why ->
+                runOnUiThread { Faults.record(this, Faults.WAKE, why) }
+            },
+        )
+        wake = listener
+        Faults.clear(this, Faults.WAKE)
+        listener.start()
+    }
+
+    /** Called by name rather than by tap. Otherwise identical. */
+    private fun onWoken() {
+        if (brain.state.value.listening) return
+        if (conversation.isOpen(SystemClock.elapsedRealtime())) return
+        conversation.open(SystemClock.elapsedRealtime())
+        lifecycleScope.launch { converse() }
+    }
+
     private fun onTap() {
         if (brain.state.value.listening) return
         if (voice.speaking) {
@@ -230,6 +277,23 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        // Review Focus 2. The wake listener holds the microphone whenever it
+        // is running, and only one thing on this tablet can record at a
+        // time, so the recogniser that transcribes Ahmed gets nothing until
+        // it is handed over. The `finally` is the whole point: an exception,
+        // a timeout, a closed conversation and a cancelled coroutine all
+        // leave through it, and any path that skipped it would leave him
+        // deaf to his own name until the app restarted.
+        wake.stop()
+        try {
+            listen()
+        } finally {
+            conversation.close()
+            wake.start()
+        }
+    }
+
+    private suspend fun listen() {
         while (conversation.isOpen(SystemClock.elapsedRealtime())) {
             brain.onListening()
             val heard = ears.listen()
@@ -238,7 +302,6 @@ class MainActivity : AppCompatActivity() {
                 // Said now, and kept where the maintenance screen can show
                 // it later: the caption is gone in twenty seconds.
                 Faults.record(this, Faults.EARS, heard.reason)
-                conversation.close()
                 brain.onCannotHear(heard.reason)
                 return
             }
@@ -249,7 +312,6 @@ class MainActivity : AppCompatActivity() {
                 // the first one just listens again; it is the idle window
                 // that eventually ends this, in silence.
                 if (conversation.isOpen(SystemClock.elapsedRealtime())) continue
-                conversation.close()
                 brain.onHeardNothing()
                 return
             }
@@ -260,13 +322,16 @@ class MainActivity : AppCompatActivity() {
             // out the conversation it is still delivering.
             conversation.exchange(SystemClock.elapsedRealtime())
         }
-        conversation.close()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         ReminderAlarmReceiver.listener = null
         if (::voice.isInitialized) voice.shutdown()
+        // Releases the microphone and the 68MB model. An un-released model
+        // holds that memory for the life of the process.
+        (wake as? VoskWakeWord)?.release()
+        wake = SilentWakeWord
         eye?.stop()
         eye = null
         // A self-reposting Runnable holding the Activity outlives finish()

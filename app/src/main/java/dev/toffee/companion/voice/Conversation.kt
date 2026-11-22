@@ -40,12 +40,17 @@ class Conversation(private val idleAfterMs: Long = IDLE_AFTER_MS) {
     /**
      * Something was said.
      *
-     * Called when Ahmed speaks AND for every sentence Toffee says. The
-     * per-sentence part is load-bearing, not thoroughness: an answer long
-     * enough to outlast [idleAfterMs] would otherwise look exactly like
-     * ninety seconds of silence, and the conversation would lapse while it
-     * was still being delivered. Nothing here can distinguish those two
-     * cases after the fact, so the caller must not create the gap.
+     * Called when Ahmed speaks and again when Toffee has finished
+     * answering. The second call is what stops the time he spent talking
+     * from counting as silence.
+     *
+     * The limit, stated plainly because it is easy to assume otherwise:
+     * nothing renews the conversation DURING an answer, so a single answer
+     * longer than [idleAfterMs] ends the conversation once it finishes.
+     * Nothing here could distinguish that from Ahmed walking away mid-reply.
+     * It is not reachable today — the persona holds him to one or two
+     * sentences — and if it ever is, the fix is to renew per sentence as
+     * they stream, which [exchange] already supports.
      *
      * Ignored when no conversation is open, and ignored when the one that
      * was open has already lapsed: a reply arriving late must not reopen the
