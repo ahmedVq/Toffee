@@ -62,7 +62,7 @@ class ProsodyTest {
     /** Narrow is not flat. A voice that sounds identical in every mood has
      *  stopped carrying mood at all, which is the opposite failure. */
     @Test
-    fun moodStillChangesHowSheSounds() {
+    fun moodStillChangesHowHeSounds() {
         val distinct = Mood.values().map { Prosody.forMood(it) }.toSet()
         assertTrue("only ${distinct.size} distinct voices across the moods", distinct.size >= 5)
     }

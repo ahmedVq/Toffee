@@ -42,10 +42,18 @@ class BrainTest {
          *  unreachable backend does. */
         var sentences: List<Pair<String, Mood>> = emptyList()
 
+        /** Run after each streamed sentence, so a test can do something to
+         *  the Brain while its reply is still arriving — which is the only
+         *  way to reproduce a tap landing mid-reply. */
+        var duringStream: (() -> Unit)? = null
+
         override suspend fun turn(text: String, onSentence: (String, Mood) -> Unit): Reply {
             turns += text
             if (delayMs > 0) delay(delayMs)
-            for ((s, m) in sentences) onSentence(s, m)
+            for ((s, m) in sentences) {
+                onSentence(s, m)
+                duringStream?.invoke()
+            }
             return reply
         }
 
@@ -595,5 +603,59 @@ class BrainTest {
         advanceTimeBy(1_000)
 
         assertEquals("he said the whole reply again after streaming it", 1, voice.said.size)
+    }
+
+    /**
+     * A tap stops the whole reply, not the sentence it landed on.
+     *
+     * Streaming broke this and nothing noticed. Before it, one reply was
+     * one call to the engine, so hushing it ended it. Now a reply is
+     * several sentences arriving over seconds, and `hush` only stopped the
+     * ones already handed over: the next frame to arrive queued itself
+     * behind the silence and he started talking again. Ahmed taps, Toffee
+     * stops, and half a second later Toffee carries on — which reads as
+     * being ignored, and is exactly what the tap means not to be.
+     */
+    @Test
+    fun `hushing stops the rest of a streamed reply, not just the sentence in the air`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply {
+            sentences = listOf(
+                "First." to Mood.NEUTRAL,
+                "Second." to Mood.NEUTRAL,
+                "Third." to Mood.NEUTRAL,
+            )
+            reply = Reply("First. Second. Third.", Mood.NEUTRAL)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+        agent.duringStream = { brain.hush() }
+
+        brain.say("go on then")
+        advanceTimeBy(1_000)
+
+        assertEquals(listOf("First."), voice.said.map { it.first })
+        assertTrue("the tap must reach the engine", voice.hushed)
+    }
+
+    /** And the hush does not outlive the reply it stopped: the next thing
+     *  he is asked is answered normally. */
+    @Test
+    fun `a hushed reply does not silence the next one`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply {
+            sentences = listOf("First." to Mood.NEUTRAL, "Second." to Mood.NEUTRAL)
+            reply = Reply("First. Second.", Mood.NEUTRAL)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+        agent.duringStream = { brain.hush() }
+        brain.say("one")
+        advanceTimeBy(1_000)
+
+        agent.duringStream = null
+        voice.said.clear()
+        brain.say("two")
+        advanceTimeBy(1_000)
+
+        assertEquals(listOf("First.", "Second."), voice.said.map { it.first })
     }
 }

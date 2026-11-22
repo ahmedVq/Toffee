@@ -7,7 +7,7 @@ import org.junit.Test
 /**
  * What counts as being called, as opposed to being talked about.
  *
- * The recogniser behind this is a 40MB model that has never heard the word
+ * The recogniser behind this is a 68MB model that has never heard the word
  * "Toffee" used as a name, so near misses are the normal case rather than
  * the edge case. Being generous about them is the difference between a wake
  * word that works and one Ahmed gives up on — but every variant accepted is
@@ -43,6 +43,51 @@ class WakePhraseTest {
     @Test
     fun theOneMishearingThatCanActuallyArriveCounts() {
         assertTrue(WakePhrase.heard("hey coffee"))
+    }
+
+    /**
+     * "I'll grab a coffee" is not someone calling him.
+     *
+     * "a" is in the greeting list so that "a toffee" counts — that is his
+     * name with an article in front of it. Crossing it with the confusable
+     * list gave away far more: "a coffee" is a thing a person says out loud
+     * in an office, on the phone, to nobody. The spec's first anti-goal is
+     * that he wakes when nobody called him.
+     *
+     * So the leniency that exists for a mishearing is narrower than the
+     * leniency that exists for his actual name.
+     */
+    @Test
+    fun askingForACoffeeIsNotCallingHim() {
+        assertFalse(WakePhrase.heard("a coffee"))
+        assertFalse(WakePhrase.heard("i'll grab a coffee"))
+    }
+
+    @Test
+    fun anArticleStillCountsInFrontOfHisRealName() {
+        assertTrue(WakePhrase.heard("a toffee"))
+    }
+
+    /**
+     * `[unk]` is a real token, not a placeholder.
+     *
+     * The grammar includes `[unk]` so the recogniser can say "that was not
+     * one of my phrases" instead of forcing every sound onto the nearest
+     * one. It emits it literally, and a room noise before the greeting puts
+     * it at position 0 — where the position rule then reads it as him being
+     * talked about rather than called.
+     */
+    @Test
+    fun noiseBeforeTheGreetingDoesNotSwallowIt() {
+        assertTrue(WakePhrase.heard("[unk] hey toffee"))
+        assertTrue(WakePhrase.heard("[unk] [unk] toffee"))
+    }
+
+    /** But it is still not a way in on its own: the name has to be there. */
+    @Test
+    fun noiseAloneIsNotAWake() {
+        assertFalse(WakePhrase.heard("[unk]"))
+        assertFalse(WakePhrase.heard("[unk] [unk]"))
     }
 
     @Test

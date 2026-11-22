@@ -44,10 +44,21 @@ object Faults {
     fun current(context: Context, subsystem: String): String? =
         store(context).getString(subsystem, null)
 
-    /** Everything currently broken, in a fixed order so the screen does not
-     *  reshuffle itself between visits. */
+    /**
+     * Every subsystem that can record a fault, in a fixed order so the
+     * screen does not reshuffle itself between visits.
+     *
+     * One list, because there were two: [all] used to carry its own copy and
+     * [WAKE] never reached it, so the wake word recorded faults into a store
+     * that nothing rendered. FaultsTest now reads the constants off this
+     * class and insists they all appear here, which is a check that cannot
+     * be forgotten by the person most likely to forget it.
+     */
+    val SUBSYSTEMS: List<String> = listOf(VOICE, CAMERA, EARS, WAKE)
+
+    /** Everything currently broken. */
     fun all(context: Context): List<String> =
-        listOf(VOICE, CAMERA, EARS).mapNotNull { store(context).getString(it, null) }
+        SUBSYSTEMS.mapNotNull { store(context).getString(it, null) }
 
     private fun store(context: Context) =
         context.applicationContext.getSharedPreferences("toffee.faults", Context.MODE_PRIVATE)

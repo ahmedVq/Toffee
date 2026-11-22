@@ -189,3 +189,74 @@ Deno.test("a rejected request is still plain JSON", async () => {
   assertEquals(res.status, 400);
   assertEquals(res.headers.get("content-type")?.includes("json"), true);
 });
+
+/**
+ * The words are already out of the speaker. Recording them is not optional.
+ *
+ * Streaming changed what a failure here means. Before it, a throw while
+ * writing the exchange produced a 500 and NOTHING was said -- the tablet
+ * stayed quiet and the turn simply did not happen. Now the sentences have
+ * been spoken aloud by the time any of this runs, so a throw leaves Toffee
+ * having said something that the conversation has no record of: the next
+ * turn is missing an exchange Ahmed remembers having, and `lastSaid` is
+ * stale so the rule against repeating himself is bypassed.
+ *
+ * The spend write is the one most likely to fail on its own -- it is a
+ * different table with a unique key per day -- and it used to run first,
+ * so it could take the transcript down with it.
+ */
+Deno.test("a spend write that fails does not lose the exchange", async () => {
+  await wipe();
+  const runner: TurnRunner = (o) => {
+    o.onSentence?.(`${MARK} I did.`);
+    return Promise.resolve({
+      reply: `${MARK} I did.`,
+      calls: [],
+      spent: { in: 10, out: 20 },
+    });
+  };
+
+  const res = await turnHandler(post({ text: `${MARK} did you` }), {
+    runner,
+    spend: () => Promise.reject(new Error("llm_spend is having a day")),
+  });
+  const done = await drain(res);
+
+  assertEquals(done.reply, `${MARK} I did.`);
+  const { data } = await db
+    .from("conversation")
+    .select("role, content")
+    .like("content", `${MARK}%`)
+    .order("at", { ascending: true });
+  assertEquals(
+    (data ?? []).map((r: { role: string }) => r.role),
+    ["user", "model"],
+    "both halves of the exchange must survive a failed spend write",
+  );
+  await wipe();
+});
+
+/** And the other way round: a transcript write that fails must not take the
+ *  spend accounting with it, or a turn that cost money goes uncounted and
+ *  the governor never sees it. */
+Deno.test("a transcript write that fails does not lose the spend", async () => {
+  await wipe();
+  let counted: { in: number; out: number } | null = null;
+  const runner: TurnRunner = (o) => {
+    o.onSentence?.(`${MARK} fine.`);
+    return Promise.resolve({ reply: `${MARK} fine.`, calls: [], spent: { in: 3, out: 4 } });
+  };
+
+  const res = await turnHandler(post({ text: `${MARK} well` }), {
+    runner,
+    record: () => Promise.reject(new Error("conversation table is having a day")),
+    spend: (inTok: number, outTok: number) => {
+      counted = { in: inTok, out: outTok };
+      return Promise.resolve();
+    },
+  });
+  await drain(res);
+
+  assertEquals(counted, { in: 3, out: 4 });
+  await wipe();
+});

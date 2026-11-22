@@ -83,7 +83,11 @@ class WakeWordTest {
      */
     @Test
     fun takingTheMicrophonePermanentlyBrokeNothingElse() {
-        for (subsystem in listOf(Faults.EARS, Faults.VOICE, Faults.CAMERA)) {
+        // The ears and the mouth only. The camera does not touch the
+        // microphone, so asserting it here would fail this test for a
+        // reason that has nothing to do with the wake word — and a camera
+        // fault is a state this tablet is documented as having sometimes.
+        for (subsystem in listOf(Faults.EARS, Faults.VOICE)) {
             assertNull(
                 subsystem + " is broken: " + Faults.current(context, subsystem),
                 Faults.current(context, subsystem),

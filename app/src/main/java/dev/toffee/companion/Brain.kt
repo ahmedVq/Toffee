@@ -53,6 +53,12 @@ class Brain(
     private val speaking = Mutex()
     private var clearJob: Job? = null
 
+    /** Set by [hush], cleared by the next [say]. Volatile because the tap
+     *  that sets it arrives on the main thread while the stream that reads
+     *  it is on whatever thread the network call resumed on. */
+    @Volatile
+    private var hushed = false
+
     /** He sat down. */
     suspend fun onArrival() = ask { agent.event("arrived", emptyMap()) }
 
@@ -83,11 +89,20 @@ class Brain(
         if (!usable()) return inert()
         _state.value = _state.value.copy(mood = Mood.LISTENING, listening = true)
 
+        // A new question is not the old one: whatever he was told to stop
+        // saying, he is allowed to answer this.
+        hushed = false
+
         val caption = StringBuilder()
         var spoken = 0
 
         val reply = speaking.withLock {
             agent.turn(text) { sentence, mood ->
+                // He was interrupted. The sentences still coming down the
+                // stream are the rest of a thought nobody wants finished:
+                // queueing them means he stops, then carries on half a
+                // second later, which is how being ignored looks.
+                if (hushed) return@turn
                 clearJob?.cancel()
                 if (caption.isNotEmpty()) caption.append(' ')
                 caption.append(sentence)
@@ -98,6 +113,11 @@ class Brain(
                 voice.say(sentence, mood, interrupt = first)
             }
         }
+
+        // Interrupted. The face keeps whatever he had managed to say; what
+        // it must not do is settle to the full reply he was stopped from
+        // delivering, or announce a mood for a thought nobody heard.
+        if (hushed) return
 
         // Nothing streamed: the agent was unreachable, or it chose silence.
         // That is exactly what show() is for, including saying the line.
@@ -152,7 +172,20 @@ class Brain(
 
     /** Stop talking. A tap while it is mid-sentence is him interrupting, and
      *  a companion that talks over an interruption is a radio. */
-    fun hush() = voice.hush()
+    /**
+     * Stop talking, and stay stopped for this reply.
+     *
+     * The flag is the part that matters. Stopping the engine only silences
+     * what has already been handed to it, and a streamed reply is still
+     * arriving — so without this he goes quiet for half a second and then
+     * resumes with the next sentence, which is worse than not stopping at
+     * all. Cleared by the next [say], because the next question deserves an
+     * answer.
+     */
+    fun hush() {
+        hushed = true
+        voice.hush()
+    }
 
     /**
      * The mic is open.

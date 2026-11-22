@@ -18,12 +18,27 @@ interface WakeWord {
      * Start listening for the wake phrase.
      *
      * Takes the microphone, so nothing else can record until [stop]. The
-     * caller owns that handover; see `MainActivity.converse`.
+     * caller owns that handover; see [Attention], which is where the ordering
+     * lives and where it is tested.
      */
     fun start()
 
     /** Give the microphone back. Safe to call when not listening. */
     fun stop()
+
+    /**
+     * Stop or resume decoding without giving the microphone back.
+     *
+     * The difference from [stop] is the whole reason both exist. While
+     * Toffee is talking, his own voice reaches his own microphone and must
+     * not be listened to — but releasing the recorder for every sentence
+     * would mean re-acquiring it immediately afterwards, and would leave the
+     * microphone briefly free for something else to take. Pausing keeps the
+     * claim and drops the audio.
+     *
+     * Safe to call when not listening, where it does nothing.
+     */
+    fun pause(paused: Boolean)
 
     /** Whether it currently holds the microphone. */
     val listening: Boolean
@@ -38,5 +53,6 @@ interface WakeWord {
 object SilentWakeWord : WakeWord {
     override fun start() = Unit
     override fun stop() = Unit
+    override fun pause(paused: Boolean) = Unit
     override val listening: Boolean get() = false
 }

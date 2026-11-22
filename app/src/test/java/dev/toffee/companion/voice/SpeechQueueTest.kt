@@ -1,5 +1,6 @@
 package dev.toffee.companion.voice
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -84,5 +85,79 @@ class SpeechQueueTest {
         q.queued("1")
         q.finished(null)
         assertTrue("an unidentified callback must not be taken for the current one", q.speaking)
+    }
+}
+
+/**
+ * When he starts and stops, announced the moment it happens.
+ *
+ * Polling `speaking` on a timer was the alternative and it is not good
+ * enough here. The thing that listens for his name has to be paused BEFORE
+ * his first word reaches the microphone, not up to a tick afterwards —
+ * otherwise the recogniser has already heard the start of his own sentence,
+ * and the whole defence against waking himself is a race.
+ *
+ * So the queue says so itself, on the edges only: once when he starts
+ * talking and once when he finally stops, never per sentence of one reply.
+ */
+class SpeechQueueEdgeTest {
+
+    private val announced = mutableListOf<Boolean>()
+    private val q = SpeechQueue { announced.add(it) }
+
+    @Test
+    fun theFirstSentenceAnnouncesThatHeHasStarted() {
+        q.queued("1")
+        assertEquals(listOf(true), announced)
+    }
+
+    @Test
+    fun thefollowingSentencesOfOneReplyAnnounceNothing() {
+        q.queued("1")
+        q.queued("2")
+        q.queued("3")
+        assertEquals("one reply is one episode of talking", listOf(true), announced)
+    }
+
+    @Test
+    fun theLastSentenceAnnouncesThatHeHasStopped() {
+        q.queued("1")
+        q.queued("2")
+        q.finished("2")
+        assertEquals(listOf(true, false), announced)
+    }
+
+    /**
+     * The flushed-sentence case, which is the reason this class tracks the
+     * last id rather than a count. A callback for a sentence that was
+     * cancelled must not announce silence over the one that replaced it.
+     */
+    @Test
+    fun aStaleCallbackAnnouncesNothing() {
+        q.queued("1")
+        q.queued("2")
+        q.finished("1")
+        assertEquals(listOf(true), announced)
+    }
+
+    @Test
+    fun hushingAnnouncesThatHeHasStopped() {
+        q.queued("1")
+        q.silenced()
+        assertEquals(listOf(true, false), announced)
+    }
+
+    @Test
+    fun hushingWhenHeWasAlreadyQuietAnnouncesNothing() {
+        q.silenced()
+        assertEquals(emptyList<Boolean>(), announced)
+    }
+
+    @Test
+    fun heCanStartAgainAfterStopping() {
+        q.queued("1")
+        q.finished("1")
+        q.queued("2")
+        assertEquals(listOf(true, false, true), announced)
     }
 }

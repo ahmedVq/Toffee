@@ -23,15 +23,31 @@ import org.vosk.android.SpeechService
  * verified by opening the AAR before a line of this was written, the same
  * way the camera's ABI was checked.
  *
- * Two things here are load-bearing and neither is obvious:
+ * Four things here are load-bearing and none is obvious:
  *
  * It acts on FINAL results only. A published Vosk assistant had to make this
  * exact change: partial results containing the phrase fire early, and then
  * again, and again, as the partial is revised.
  *
+ * The model is loaded once and kept. `SpeechService.shutdown()` was read in
+ * the bytecode and does exactly one thing — `recorder.release()`. It does
+ * not stop the recogniser thread and it frees neither the `Recognizer` nor
+ * the `Model`, both of which are JNA pointers with no finaliser. Allocating
+ * a model per conversation therefore leaked about 40MB of native memory
+ * each time, on a tablet with 1.5GB, that cannot be restarted by hand.
+ *
+ * A busy microphone is not a death sentence. `SpeechService`'s constructor
+ * allocates the `AudioRecord` and throws when it cannot get one, which is
+ * exactly what happens in the moment after a conversation ends: releasing
+ * the speech recogniser is an IPC to another process and the microphone
+ * comes free slightly later. Treating that as fatal — which it was — meant
+ * the first conversation of the day permanently ended the wake word, on a
+ * device that is HOME and never restarts.
+ *
  * It holds the microphone for as long as it listens. Nothing else on the
  * tablet can record while it does, so [stop] must be called before the
- * recogniser that transcribes Ahmed, on every path.
+ * recogniser that transcribes Ahmed, on every path. [Attention] owns that
+ * decision; this only carries it out.
  *
  * Never throws. A tablet whose wake word failed to load is a tablet Ahmed
  * taps, which is what he does today.
@@ -45,68 +61,151 @@ class VoskWakeWord(
     private val app = context.applicationContext
 
     @Volatile private var service: SpeechService? = null
+    @Volatile private var recognizer: Recognizer? = null
+
+    /** Kept for the life of the process once loaded. Reloading it per
+     *  conversation cost 68MB of file reads, several seconds of deafness,
+     *  and — because nothing frees the old one — the memory as well. */
     @Volatile private var model: Model? = null
+
+    /** Fatal only: no microphone permission, a model that will not load, or
+     *  [release]. Never set for something that might work next time. */
     @Volatile private var dead = false
+
+    /** A start is in flight. Without this, [Attention] asking twice spawns
+     *  two loader threads racing for one microphone. */
+    @Volatile private var starting = false
+
+    /** Bumped by [stop]. A loader thread that finds the number changed under
+     *  it was superseded and tears down what it built instead of installing
+     *  it — the window is about five seconds wide on this tablet, which is
+     *  exactly when Ahmed taps after a reboot. */
+    @Volatile private var generation = 0
+
+    /** Remembered rather than applied, because [pause] is normally called in
+     *  the same breath as [start] and there is no service to pause yet. */
+    @Volatile private var paused = false
 
     override val listening: Boolean get() = service != null
 
     override fun start() {
-        if (dead || listening) return
+        if (dead || service != null || starting) return
 
         if (app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            return fail("I can't listen for my name without the microphone.")
+            return fatal("I can't listen for my name without the microphone.")
         }
+
+        starting = true
+        val mine = generation
 
         // Unpacking is 68MB of file copying on first run and must not happen
         // on the main thread; the model load itself is also slow enough to
         // drop frames. Everything here is off the UI thread, and the
         // listener callbacks come back on Vosk's own thread.
-        Thread({
-            val loaded = runCatching {
-                val dir = unpackedModel() ?: return@runCatching null
-                Model(dir.absolutePath)
-            }.getOrNull()
+        Thread({ load(mine) }, "toffee-wake").start()
+    }
 
-            if (loaded == null) {
-                fail("My wake word didn't load. Tap me instead.")
-                return@Thread
-            }
-            if (dead) {
-                runCatching { loaded.close() }
-                return@Thread
+    private fun load(mine: Int) {
+        val loaded = model ?: runCatching {
+            val dir = unpackedModel() ?: return@runCatching null
+            Model(dir.absolutePath)
+        }.getOrNull()
+
+        if (loaded == null) {
+            starting = false
+            // The model is in the APK. If it will not load it will not load
+            // on the next try either, so this one really is final.
+            fatal("My wake word didn't load. Tap me instead.")
+            return
+        }
+        model = loaded
+
+        if (dead || mine != generation) {
+            starting = false
+            return
+        }
+
+        // The microphone may still be held by the recogniser that just
+        // finished transcribing Ahmed: releasing it is an IPC and completes
+        // after the call returns. Retrying is the whole difference between
+        // a wake word that survives a conversation and one that does not.
+        var attempt = 0
+        while (true) {
+            if (dead || mine != generation) {
+                starting = false
+                return
             }
 
-            val started = runCatching {
+            val opened = runCatching {
                 // Restricted to the phrases that mean his name. A recogniser
                 // that cannot produce a sentence cannot mishear one into a
                 // wake, and it costs this CPU far less.
                 val grammar = JSONArray(WakePhrase.GRAMMAR).toString()
-                val recognizer = Recognizer(loaded, SAMPLE_RATE, grammar)
-                SpeechService(recognizer, SAMPLE_RATE).also { it.startListening(Listener()) }
+                val r = Recognizer(loaded, SAMPLE_RATE, grammar)
+                val s = runCatching { SpeechService(r, SAMPLE_RATE) }
+                    .getOrElse { runCatching { r.close() }; throw it }
+                r to s
             }.getOrNull()
 
-            if (started == null) {
-                runCatching { loaded.close() }
-                fail("My wake word couldn't open the microphone. Tap me instead.")
-                return@Thread
+            if (opened != null) {
+                val (r, s) = opened
+                if (dead || mine != generation) {
+                    // Superseded while we were opening it. Tear down rather
+                    // than install, or the thing that superseded us is now
+                    // sharing a microphone it believes it owns.
+                    runCatching { s.stop() }
+                    runCatching { s.shutdown() }
+                    runCatching { r.close() }
+                    starting = false
+                    return
+                }
+                s.startListening(Listener())
+                s.setPause(paused)
+                recognizer = r
+                service = s
+                starting = false
+                return
             }
 
-            model = loaded
-            service = started
-        }, "toffee-wake").start()
+            if (++attempt >= OPEN_ATTEMPTS) break
+            runCatching { Thread.sleep(OPEN_RETRY_MS) }
+        }
+
+        starting = false
+        // Not fatal: say so, and let the next handover try again. Nothing
+        // here has set `dead`, so the end of the next conversation is
+        // another chance.
+        onUnavailable("My wake word couldn't open the microphone. Tap me instead.")
     }
 
     override fun stop() {
-        val running = service ?: return
+        // Before anything else: any loader thread in flight is now stale and
+        // must not install what it is building.
+        generation++
+        starting = false
+
+        val running = service ?: run {
+            recognizer?.let { runCatching { it.close() } }
+            recognizer = null
+            return
+        }
         service = null
-        // Both: stop() ends the recognition, shutdown() releases the
-        // microphone. Leaving the second out means the next thing that wants
-        // to record silently gets nothing, which is the failure mode this
-        // whole handover exists to avoid.
+        val r = recognizer
+        recognizer = null
+
+        // All three, in this order. stop() ends the recogniser thread,
+        // shutdown() releases the microphone, and close() frees the native
+        // recogniser — which nothing in Vosk does for you.
         runCatching { running.stop() }
         runCatching { running.shutdown() }
+        r?.let { runCatching { it.close() } }
+    }
+
+    override fun pause(paused: Boolean) {
+        this.paused = paused
+        service?.let { runCatching { it.setPause(paused) } }
     }
 
     /** Release the model as well. Call when the activity is done. */
@@ -117,7 +216,7 @@ class VoskWakeWord(
         model = null
     }
 
-    private fun fail(why: String) {
+    private fun fatal(why: String) {
         dead = true
         onUnavailable(why)
     }
@@ -167,6 +266,10 @@ class VoskWakeWord(
         override fun onPartialResult(hypothesis: String?) = Unit
 
         override fun onResult(hypothesis: String?) {
+            // Paused means his own voice is in the room. Vosk delivers a
+            // result at an endpoint, which is after the speech that produced
+            // it, so a result can still arrive just after the pause began.
+            if (paused) return
             val said = textOf(hypothesis) ?: return
             if (WakePhrase.heard(said)) onWake()
         }
@@ -179,7 +282,11 @@ class VoskWakeWord(
             // it at all is the point — the first version said only "it
             // stopped working", which is exactly as useful as silence when
             // the device's logs reach nobody.
-            fail("My wake word stopped working (${e?.javaClass?.simpleName ?: "no reason given"}).")
+            //
+            // Not fatal. An error from the recogniser thread is the kind of
+            // thing a restart fixes, and the next handover is a restart.
+            service = null
+            onUnavailable("My wake word stopped working (${e?.javaClass?.simpleName ?: "no reason given"}).")
         }
 
         override fun onTimeout() = Unit
@@ -196,6 +303,12 @@ class VoskWakeWord(
     private companion object {
         /** What the model was trained at; anything else is resampled badly. */
         const val SAMPLE_RATE = 16_000f
+
+        /** How many times to wait out a microphone someone else still holds.
+         *  Five attempts at 400ms covers the handover from the speech
+         *  recogniser, which is the only thing that competes for it. */
+        const val OPEN_ATTEMPTS = 5
+        const val OPEN_RETRY_MS = 400L
 
         const val ASSET_DIR = "vosk-model-en-us"
         const val UNPACKED_DIR = "vosk-model"

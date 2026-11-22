@@ -55,10 +55,17 @@ class ConversationTest {
      * hold. Ninety-four seconds with nothing said IS an idle conversation;
      * there is no way to tell that gap from Ahmed walking away.
      *
-     * The actual protection is that a long answer is not a gap. Toffee
-     * streams a sentence at a time, and every sentence is an exchange, so
-     * an answer of any length renews the conversation as it is delivered.
-     * That is a requirement on the caller, and this is where it is pinned.
+     * The actual protection is that a long answer is not a gap: it has to
+     * be renewed while it is being delivered. That is a requirement on the
+     * caller, and this is where it is pinned.
+     *
+     * It was also, for a while, a requirement no caller met. The test was
+     * green because `MainActivity` renewed once before speaking and once
+     * after `say` returned — and `say` returned when the stream ended, not
+     * when the speaker stopped, so the second renewal always landed early
+     * enough to hide the gap. `MainActivity.waitUntilHeStopsTalking` is
+     * what meets it now: it renews every hundred milliseconds for as long
+     * as audio is actually coming out.
      */
     @Test
     fun aLongAnswerKeepsTheConversationAliveAsItIsDelivered() {

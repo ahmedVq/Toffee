@@ -20,7 +20,13 @@ export type TurnRunner = (opts: {
   onSentence?: (s: string) => void;
 }) => Promise<{ reply: string; calls: ToolResult[]; spent: { in: number; out: number } }>;
 
-export type TurnDeps = { runner?: TurnRunner };
+export type TurnDeps = {
+  runner?: TurnRunner;
+  /** Injectable for the same reason [runner] is: so a failure here can be
+   *  exercised without taking the spend table down for real. */
+  spend?: (inTokens: number, outTokens: number) => Promise<void>;
+  record?: (said: string, replied: string) => Promise<void>;
+};
 
 /** How much of the conversation to carry. Distilled memories do the long-term
  * work, so the transcript only needs enough for the thread of the moment. */
@@ -42,6 +48,30 @@ async function append(role: "user" | "model", content: string): Promise<void> {
   await serviceClient().from("conversation").insert({ role, content });
 }
 
+/** Both halves of one exchange, in order. Separate inserts rather than one
+ *  call because the table orders by its own timestamp and a pair written
+ *  together can come back the wrong way round. */
+async function recordExchange(said: string, replied: string): Promise<void> {
+  await append("user", said);
+  await append("model", replied);
+}
+
+/**
+ * Run it, and if it fails say so rather than taking the caller with it.
+ *
+ * Only for work whose failure must not undo work already done — here, after
+ * the tablet has already spoken. The failure is not swallowed: it reaches
+ * the function logs, which on this project is where a backend problem is
+ * actually looked at.
+ */
+async function anyway(what: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(`turn: ${what} failed after the reply was spoken:`, e);
+  }
+}
+
 const bad = (message: string) =>
   Response.json({ error: message }, { status: 400 });
 
@@ -60,6 +90,8 @@ export async function turnHandler(
   if (!text) return bad("text is required");
 
   const run = deps.runner ?? (runTurn as unknown as TurnRunner);
+  const spend = deps.spend ?? noteSpend;
+  const record = deps.record ?? recordExchange;
   const { dispatch, mood } = makeDispatcher();
 
   // Everything from here on goes out as it happens. The handler returns as
@@ -90,12 +122,25 @@ export async function turnHandler(
       onSentence: (s) => emit.text(s),
     });
 
+    // Bookkeeping, and by now the tablet has already said the words out
+    // loud. That is what changed when this started streaming: before it, a
+    // throw here produced a 500 and nothing had been spoken, so losing the
+    // write lost nothing. Now a throw leaves Toffee having said something
+    // the conversation has no record of — the next turn is missing an
+    // exchange Ahmed remembers, and `lastSaid` is stale so the rule against
+    // repeating himself is bypassed.
+    //
+    // So neither of these may take the other down, and neither may take the
+    // `done` frame down. They are independent failures and are reported as
+    // such; the function's own logs are where that goes, since nothing else
+    // here can reach a person.
+    //
     // Spend is recorded even when the reply was a fallback: a failed call
     // still costs, and the governor's cost gate has to see it.
-    await noteSpend(result.spent.in, result.spent.out);
-
-    await append("user", text);
-    await append("model", result.reply);
+    await Promise.all([
+      anyway("spend accounting", () => spend(result.spent.in, result.spent.out)),
+      anyway("the transcript", () => record(text, result.reply)),
+    ]);
 
     const done: { reply: string; mood: Mood; calls: ToolResult[] } = {
       reply: result.reply,

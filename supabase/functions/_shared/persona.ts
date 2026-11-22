@@ -108,8 +108,17 @@ export function renderSystem(ctx: Ctx): string {
   const history = ctx.coreFacts.length === 0 && ctx.relevantFacts.length === 0
     ? "You do not know anything about him yet. Do not pretend otherwise."
     : [
+      // Dated on purpose. These were typed into a seed script once, when
+      // the tablet was set up; they are not things he keeps observing, and
+      // nothing on the device can take one back. Handed over as present
+      // tense, "He finds me too slow" would be asserted as current truth in
+      // every turn for ever -- including after the change that made him
+      // faster. Saying when they were true costs nothing and lets him treat
+      // a contradiction as news instead of as an error.
       ctx.coreFacts.length > 0
-        ? `WHAT YOU KNOW ABOUT HIM\n${ctx.coreFacts.map(bullet).join("\n")}`
+        ? `WHAT HE TOLD YOU WHEN HE SET YOU UP (background, may be out of date -- believe him over this list)\n${
+          ctx.coreFacts.map(bullet).join("\n")
+        }`
         : null,
       ctx.relevantFacts.length > 0
         ? `WHAT THIS REMINDS YOU OF\n${ctx.relevantFacts.map(bullet).join("\n")}`

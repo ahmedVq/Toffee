@@ -3,7 +3,7 @@ package dev.toffee.companion.voice
 /**
  * Whether Toffee was called, as opposed to talked about.
  *
- * The recogniser behind this is a 40MB model that has never heard "Toffee"
+ * The recogniser behind this is a 68MB model that has never heard "Toffee"
  * used as a name. Near misses are the normal case, not the edge case, so
  * this is deliberately generous about how the name comes out — and
  * deliberately strict about where in the sentence it appears.
@@ -53,6 +53,22 @@ object WakePhrase {
     /** Optional, because "Toffee, what time is it" is also being called. */
     private val GREETINGS: List<String> = listOf("hey", "hi", "hello", "ok", "okay", "a")
 
+    /**
+     * The greetings a *mishearing* is allowed to follow.
+     *
+     * Narrower than [GREETINGS], and the difference is "a". That article is
+     * in the list above so "a toffee" counts — it is his name with a word in
+     * front of it. Crossed with [CONFUSABLE] it gave away something else
+     * entirely: "a coffee" is a thing Ahmed says in his own office, on the
+     * phone, to nobody, and it would have opened the microphone and put him
+     * in the call.
+     *
+     * Leniency about a mishearing has to be narrower than leniency about the
+     * real name, because a mishearing is a word other people use for its own
+     * sake.
+     */
+    private val CONFUSABLE_GREETINGS: List<String> = GREETINGS - "a"
+
     /** The recogniser emits none of this, but a stray one must not be the
      *  thing that stops him answering. */
     private const val PUNCTUATION = ",.!?;:"
@@ -73,10 +89,21 @@ object WakePhrase {
             for (greeting in GREETINGS) add("$greeting $name")
         }
         for (word in CONFUSABLE) {
-            for (greeting in GREETINGS) add("$greeting $word")
+            for (greeting in CONFUSABLE_GREETINGS) add("$greeting $word")
         }
-        add("[unk]")
+        add(NOISE)
     }
+
+    /**
+     * What the recogniser emits for a sound that is not one of its phrases.
+     *
+     * A real token, not a placeholder: it arrives in the text like any other
+     * word. A cough or a chair before the greeting therefore lands at
+     * position 0, where the position rule below would read it as him being
+     * talked about. Stripping it is not leniency — it is refusing to count
+     * room noise as a word.
+     */
+    private const val NOISE = "[unk]"
 
     /**
      * @param finalText a FINAL recognition result, never a partial one.
@@ -90,6 +117,7 @@ object WakePhrase {
             .joinToString("")
             .split(' ')
             .filter { it.isNotBlank() }
+            .dropWhile { it == NOISE }
 
         if (words.isEmpty()) return false
 
@@ -99,8 +127,9 @@ object WakePhrase {
         // Greeted by name: the greeting first, the name immediately after.
         // Anything else before it means he is being talked about. A
         // confusable word only ever counts here, never on its own.
-        return words.size >= 2 &&
-            words[0] in GREETINGS &&
-            (words[1] in NAMES || words[1] in CONFUSABLE)
+        if (words.size < 2) return false
+        if (words[1] in NAMES) return words[0] in GREETINGS
+        if (words[1] in CONFUSABLE) return words[0] in CONFUSABLE_GREETINGS
+        return false
     }
 }

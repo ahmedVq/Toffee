@@ -33,6 +33,33 @@ fun dotenv(name: String): String {
     throw GradleException("$name is not set in ${file.absolutePath}")
 }
 
+// ------------------------------------------------------- the wake-word gate
+//
+// The Vosk model is 68MB, so it is fetched by scripts/fetch-vosk-model.sh and
+// git-ignored rather than committed. That makes it possible to build a
+// perfectly valid APK with no wake word in it — a clean checkout, CI, or
+// anyone who has run `git clean` — and the only symptom would be that the
+// headline feature silently does nothing, on a device that can only be fixed
+// by shipping it another APK.
+//
+// So the build says so instead. Checked against the acoustic model itself
+// rather than the directory, because an interrupted download leaves the
+// directory there and empty.
+val VOSK_MODEL_MARKER = "src/main/assets/vosk-model-en-us/am/final.mdl"
+
+tasks.named("preBuild") {
+    doFirst {
+        val marker = project.file(VOSK_MODEL_MARKER)
+        if (!marker.isFile) {
+            throw GradleException(
+                "the wake-word model is missing (no $VOSK_MODEL_MARKER).\n" +
+                    "Run scripts/fetch-vosk-model.sh - without it the app builds " +
+                    "fine and never answers to its name.",
+            )
+        }
+    }
+}
+
 android {
     namespace = "dev.toffee.companion"
     compileSdk = 34

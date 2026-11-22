@@ -82,6 +82,47 @@ Deno.test("core facts reach the prompt without being asked for", () => {
   assertStringIncludes(prompt, "He built me to be unimpressed by him.");
 });
 
+/**
+ * Seeded history is history, and says so.
+ *
+ * These facts were written once, by hand, when the tablet was set up.
+ * They are not observations he keeps making. "He finds me too slow, and
+ * said so" was true the day it was written and is a lie the week after
+ * the change that made him faster -- and until this, the model was handed
+ * it as a present-tense fact in the system prompt of every single turn,
+ * for ever, with no tool able to take it back.
+ *
+ * There is no forget tool and adding one is a bigger change than this
+ * branch. What the prompt can do, at no cost, is stop asserting that the
+ * list is current. A model told these were true when he was set up will
+ * treat a contradiction as news rather than as an error.
+ */
+Deno.test("seeded facts are framed as what was true at setup, not as current truth", () => {
+  const prompt = renderSystem({
+    ...ctx,
+    coreFacts: ["He finds me too slow, and said so."],
+  });
+  assertStringIncludes(prompt, "WHAT HE TOLD YOU WHEN HE SET YOU UP");
+  assertStringIncludes(
+    prompt,
+    "may be out of date",
+  );
+});
+
+// Live recall is different and must NOT carry that caveat: it is what he
+// said and did, not what was typed into a seed script.
+Deno.test("what he actually said is not labelled as possibly stale", () => {
+  const prompt = renderSystem({
+    ...ctx,
+    coreFacts: [],
+    relevantFacts: ["He asked me to stop nagging about the invoice."],
+  });
+  assertStringIncludes(prompt, "WHAT THIS REMINDS YOU OF");
+  const reminds = prompt.slice(prompt.indexOf("WHAT THIS REMINDS YOU OF"));
+  if (reminds.includes("may be out of date")) {
+    throw new Error("live recall must not be hedged like seeded history");
+  }
+});
 Deno.test("what he just said is what gets recalled against", async () => {
   const asked: string[] = [];
   await buildContext("did I ever finish the invoice", {

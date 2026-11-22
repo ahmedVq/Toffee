@@ -41,8 +41,11 @@ export function toWrite(existing: readonly string[]): string[] {
 if (import.meta.main) {
   const dryRun = Deno.args.includes("--dry-run");
 
-  // Imported lazily: it reaches for the environment, and a unit test
-  // importing CORE_FACTS should not need a database to exist.
+  // Imported here rather than at the top so that reading this file does not
+  // itself open a client. It is not isolation: persona.ts above already
+  // pulls db.ts in, so the module graph loads either way. What this avoids
+  // is the connection, because serviceClient() is what reads the
+  // environment, and nothing calls it unless the script is actually run.
   const { serviceClient } = await import("../supabase/functions/_shared/db.ts");
 
   const { data, error } = await serviceClient()

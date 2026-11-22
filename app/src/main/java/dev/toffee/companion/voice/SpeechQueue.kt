@@ -21,7 +21,19 @@ package dev.toffee.companion.voice
  * Pure, and the reason it is its own class: none of the above is visible
  * from reading [AndroidVoice], and all of it is a unit test here.
  */
-class SpeechQueue {
+class SpeechQueue(
+    /**
+     * Called when he starts talking and again when he stops — the edges
+     * only, never once per sentence of one reply.
+     *
+     * The wake listener is the caller that needs this. It has to be paused
+     * *before* his first word reaches the microphone, and a timer that
+     * notices a tick later has already let the recogniser hear the start of
+     * his own sentence. Defaults to doing nothing so the many places that
+     * only care about [speaking] are unchanged.
+     */
+    private val onChange: (speaking: Boolean) -> Unit = {},
+) {
 
     @Volatile
     private var last: String? = null
@@ -32,7 +44,9 @@ class SpeechQueue {
 
     /** A sentence was handed to the engine. */
     fun queued(id: String) {
+        val wasQuiet = last == null
         last = id
+        if (wasQuiet) onChange(true)
     }
 
     /**
@@ -43,11 +57,15 @@ class SpeechQueue {
      *        current one — guessing wrong here mutes him mid-reply.
      */
     fun finished(id: String?) {
-        if (id != null && id == last) last = null
+        if (id == null || id != last) return
+        last = null
+        onChange(false)
     }
 
     /** Everything outstanding is gone: `hush`, or a shutdown. */
     fun silenced() {
+        if (last == null) return
         last = null
+        onChange(false)
     }
 }

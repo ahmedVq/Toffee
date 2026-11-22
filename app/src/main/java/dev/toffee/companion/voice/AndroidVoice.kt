@@ -31,6 +31,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AndroidVoice(
     context: Context,
     private val onFailure: (String) -> Unit,
+    /**
+     * Called when he starts talking and again when he stops.
+     *
+     * Exists for the wake listener, which has to stop decoding before his
+     * first word reaches the microphone rather than a tick afterwards.
+     * Arrives on whatever thread the speech engine uses, so a caller that
+     * touches the UI must post.
+     */
+    onSpeaking: (Boolean) -> Unit = {},
 ) : Voice {
 
     private val app = context.applicationContext
@@ -47,7 +56,7 @@ class AndroidVoice(
 
     /** Not a boolean: a streamed reply is several queued utterances, and the
      *  first one finishing must not report him silent. See [SpeechQueue]. */
-    private val queue = SpeechQueue()
+    private val queue = SpeechQueue(onSpeaking)
     override val speaking: Boolean get() = queue.speaking
 
     private val reported = AtomicBoolean(false)

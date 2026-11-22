@@ -41,6 +41,7 @@ import dev.toffee.companion.reminders.pendingOnIo
 import dev.toffee.companion.reminders.toRow
 import dev.toffee.companion.reminders.upsertOnIo
 import dev.toffee.companion.voice.AndroidVoice
+import dev.toffee.companion.voice.Attention
 import dev.toffee.companion.voice.CloudEars
 import dev.toffee.companion.voice.Conversation
 import dev.toffee.companion.voice.DeviceEars
@@ -51,6 +52,8 @@ import dev.toffee.companion.voice.VoskWakeWord
 import dev.toffee.companion.voice.WakeWord
 import dev.toffee.companion.voice.bestEars
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -80,6 +83,15 @@ class MainActivity : AppCompatActivity() {
     /** Silent until the model loads, and silent for good if it cannot:
      *  the tap is the fallback, and it is what Ahmed has today. */
     private var wake: WakeWord = SilentWakeWord
+
+    /** Who is allowed the microphone. Replaced once the real listener
+     *  exists; until then it drives [SilentWakeWord] and does nothing. */
+    private var attention = Attention(SilentWakeWord)
+
+    /** The one conversation that may be running. A second tap used to start
+     *  a second, whose `finally` then handed the microphone back underneath
+     *  the first one still using it. */
+    private var converseJob: Job? = null
     private var eye: CameraEye? = null
     private var greeted = false
 
@@ -151,14 +163,22 @@ class MainActivity : AppCompatActivity() {
         // A tablet with no usable engine is a tablet that writes. Saying so
         // once, in the caption, is the only sign it can give: there is no
         // Settings app to go and look in.
-        voice = AndroidVoice(this) { why ->
-            // The caption alone was not enough: the arrival greeting lands a
-            // second or two later and wipes it, and AndroidVoice reports the
-            // failure exactly once, so that was the only notice there would
-            // ever be that the mouth is dead.
-            Faults.record(this, Faults.VOICE, why)
-            ui.post { caption.text = why }
-        }
+        voice = AndroidVoice(
+            this,
+            onFailure = { why ->
+                // The caption alone was not enough: the arrival greeting
+                // lands a second or two later and wipes it, and AndroidVoice
+                // reports the failure exactly once, so that was the only
+                // notice there would ever be that the mouth is dead.
+                Faults.record(this, Faults.VOICE, why)
+                ui.post { caption.text = why }
+            },
+            // Every time he starts or stops talking, the microphone has to
+            // be reconsidered — he must not be listening for his name in his
+            // own voice. This arrives on the engine's thread, so it is
+            // posted rather than acted on where it lands.
+            onSpeaking = { ui.post { syncAttention() } },
+        )
         // The device's own recogniser is free and this ROM has one; the
         // cloud is the fallback that costs money per minute, so it is only
         // reached when there is nothing on the device to reach instead.
@@ -228,16 +248,46 @@ class MainActivity : AppCompatActivity() {
             },
         )
         wake = listener
+        attention = Attention(listener)
         Faults.clear(this, Faults.WAKE)
-        listener.start()
+        syncAttention()
+    }
+
+    /**
+     * Make the microphone match what is actually happening.
+     *
+     * Everything that changes who should have it calls this, and [Attention]
+     * works out whether that means starting, stopping, pausing or nothing at
+     * all. Calling it when nothing has changed is free, which is what makes
+     * it safe to call from a doubled callback or a second tap.
+     */
+    private fun syncAttention() {
+        if (!::voice.isInitialized) return
+        attention.reconcile(
+            speaking = voice.speaking,
+            conversing = conversation.isOpen(SystemClock.elapsedRealtime()),
+        )
+    }
+
+    /**
+     * Begin a conversation, unless one is already running.
+     *
+     * The guard is the fix for two conversations at once. Both ways in —
+     * the tap and his name — land here, and the second one while the first
+     * is still going is not a new conversation, it is the same one.
+     */
+    private fun startConversing() {
+        if (converseJob?.isActive == true) return
+        conversation.open(SystemClock.elapsedRealtime())
+        syncAttention()
+        converseJob = lifecycleScope.launch { converse() }
     }
 
     /** Called by name rather than by tap. Otherwise identical. */
     private fun onWoken() {
         if (brain.state.value.listening) return
         if (conversation.isOpen(SystemClock.elapsedRealtime())) return
-        conversation.open(SystemClock.elapsedRealtime())
-        lifecycleScope.launch { converse() }
+        startConversing()
     }
 
     private fun onTap() {
@@ -248,11 +298,11 @@ class MainActivity : AppCompatActivity() {
             // opposite of what the tap meant.
             conversation.close()
             brain.hush()
+            syncAttention()
             return
         }
 
-        conversation.open(SystemClock.elapsedRealtime())
-        lifecycleScope.launch { converse() }
+        startConversing()
     }
 
     /**
@@ -273,6 +323,7 @@ class MainActivity : AppCompatActivity() {
             val why = "The microphone is switched off and I can't switch it on."
             Faults.record(this, Faults.EARS, why)
             conversation.close()
+            syncAttention()
             brain.onCannotHear(why)
             return
         }
@@ -284,17 +335,52 @@ class MainActivity : AppCompatActivity() {
         // a timeout, a closed conversation and a cancelled coroutine all
         // leave through it, and any path that skipped it would leave him
         // deaf to his own name until the app restarted.
-        wake.stop()
+        //
+        // The handover itself is [Attention]'s, not this function's. Doing
+        // it here as a stop before and a start after was wrong in ways that
+        // only show up on the device: it restarted the listener while he was
+        // still speaking the last answer, and a second conversation's
+        // `finally` handed the microphone back under the first.
+        syncAttention()
         try {
             listen()
         } finally {
             conversation.close()
-            wake.start()
+            syncAttention()
+        }
+    }
+
+    /**
+     * Wait for him to actually stop talking.
+     *
+     * The reply stops *arriving* long before it stops being *said*: the
+     * stream ends in a second or two and the speaker is still working
+     * through three queued sentences. Opening the microphone at that moment
+     * records his own voice, transcribes it, and answers it — and because
+     * each self-reply renews the conversation, the loop has no way to end.
+     * On a free tier that is an unbounded bill as well as a farce.
+     *
+     * The conversation is renewed as he speaks, which is also the contract
+     * ConversationTest pins: an answer of any length must not age out the
+     * conversation it is still delivering.
+     *
+     * Bounded, because a speech engine that never reports its last utterance
+     * finished would otherwise hold the conversation open for ever.
+     */
+    private suspend fun waitUntilHeStopsTalking() {
+        val giveUpAt = SystemClock.elapsedRealtime() + STILL_TALKING_CEILING_MS
+        while (voice.speaking && SystemClock.elapsedRealtime() < giveUpAt) {
+            conversation.exchange(SystemClock.elapsedRealtime())
+            delay(STILL_TALKING_POLL_MS)
         }
     }
 
     private suspend fun listen() {
         while (conversation.isOpen(SystemClock.elapsedRealtime())) {
+            // Covers the first turn too: he may have been greeting Ahmed
+            // when his name was called.
+            waitUntilHeStopsTalking()
+            if (!conversation.isOpen(SystemClock.elapsedRealtime())) return
             brain.onListening()
             val heard = ears.listen()
 
@@ -318,8 +404,10 @@ class MainActivity : AppCompatActivity() {
 
             conversation.exchange(SystemClock.elapsedRealtime())
             brain.say((heard as Heard.Words).text)
-            // After he has answered, not before: a long answer must not age
-            // out the conversation it is still delivering.
+            // After he has finished speaking it, not after he has finished
+            // receiving it. The two are seconds apart and the microphone
+            // must not reopen in between.
+            waitUntilHeStopsTalking()
             conversation.exchange(SystemClock.elapsedRealtime())
         }
     }
@@ -565,6 +653,14 @@ class MainActivity : AppCompatActivity() {
         const val TAG = "Toffee"
         const val TIMEZONE = "Africa/Cairo"
 
+
+        /** How often to check whether he has stopped talking, and how long
+         *  to keep checking. The ceiling exists so a speech engine that
+         *  never reports its last utterance cannot hold a conversation open
+         *  for ever; two minutes is far longer than anything he says.
+         */
+        const val STILL_TALKING_POLL_MS = 100L
+        const val STILL_TALKING_CEILING_MS = 120_000L
 
         /** A tap is a tap; a drag or a long hold is not. */
         const val TAP_SLOP_DP = 24f

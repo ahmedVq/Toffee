@@ -235,8 +235,11 @@ class Updater(
         }
     }.getOrDefault(0)
 
-    private companion object {
-        val LENIENT = Json { ignoreUnknownKeys = true; isLenient = true }
+    /** Not private, because [DOWNLOAD_TIMEOUT_MS] is the one number standing
+     *  between a 67MB APK and a tablet with no way to be repaired, and a
+     *  number nothing can assert against is a number that drifts. */
+    internal companion object {
+        private val LENIENT = Json { ignoreUnknownKeys = true; isLenient = true }
 
         /**
          * Long enough for a whole APK on this tablet's Wi-Fi, with room for
