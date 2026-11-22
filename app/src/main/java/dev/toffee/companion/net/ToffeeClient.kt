@@ -36,7 +36,17 @@ data class Reply(
  * test rather than hoped for.
  */
 interface Agent {
-    suspend fun turn(text: String): Reply
+    /**
+     * @param onSentence called with each sentence as it arrives, and the
+     *        mood in force when it did — the mood matters per sentence
+     *        because the face is set by a tool that runs before he speaks,
+     *        and a sentence spoken in the previous mood is the bug that
+     *        emitting mood early exists to prevent. The returned [Reply]
+     *        still carries the whole thing, so a caller that does not care
+     *        can ignore this and behave exactly as it did when `/turn`
+     *        answered in one piece.
+     */
+    suspend fun turn(text: String, onSentence: (String, Mood) -> Unit = { _, _ -> }): Reply
     suspend fun event(kind: String, payload: Map<String, Any?> = emptyMap()): Reply
 }
 
@@ -58,8 +68,104 @@ class ToffeeClient(
     private val session: Session,
 ) : Agent {
 
-    override suspend fun turn(text: String): Reply =
-        post("turn", buildJsonObject { put("text", text) })
+    override suspend fun turn(text: String, onSentence: (String, Mood) -> Unit): Reply =
+        stream("turn", buildJsonObject { put("text", text) }, onSentence)
+
+    /**
+     * `/turn` answers as Server-Sent Events: a sentence leaves the server the
+     * moment the model finishes writing it, so he can start speaking while
+     * the rest is still being written.
+     *
+     * Same 401-and-retry shape as [post]. A 401 arrives before any of the
+     * stream does, so there is no half-spoken reply to worry about there.
+     */
+    private suspend fun stream(
+        slug: String,
+        body: JsonObject,
+        onSentence: (String, Mood) -> Unit,
+    ): Reply {
+        val token = session.accessToken() ?: return offline()
+
+        val first = sendStream(slug, body, token, onSentence)
+        if (first.code != 401) return first.reply
+
+        if (!session.refresh()) return offline()
+        val retryToken = session.accessToken() ?: return offline()
+        return sendStream(slug, body, retryToken, onSentence).reply
+    }
+
+    private suspend fun sendStream(
+        slug: String,
+        body: JsonObject,
+        token: String,
+        onSentence: (String, Mood) -> Unit,
+    ): Attempt = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl/functions/v1/$slug")
+            .addHeader("apikey", apiKey)
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Accept", "text/event-stream")
+            .post(body.toString().toRequestBody(JSON))
+            .build()
+
+        // Declared out here so a stream that dies halfway can still report
+        // what arrived. He has already said those sentences out loud; coming
+        // back with the offline line would be the tablet contradicting
+        // itself.
+        val heard = StringBuilder()
+        var mood = Mood.NEUTRAL
+        var finished: String? = null
+        var sawDone = false
+        var code = 0
+
+        try {
+            http.newCall(request).execute().use { res ->
+                code = res.code
+                if (!res.isSuccessful) return@withContext Attempt(res.code, offline())
+                val source = res.body?.source() ?: return@withContext Attempt(res.code, offline())
+
+                Sse.parse(source) { name, data ->
+                    when (name) {
+                        "mood" -> mood = Mood.parse(field(data, "mood"))
+                        "text" -> field(data, "text")?.let { sentence ->
+                            if (heard.isNotEmpty()) heard.append(' ')
+                            heard.append(sentence)
+                            onSentence(sentence, mood)
+                        }
+                        "done" -> {
+                            sawDone = true
+                            finished = field(data, "reply")
+                            field(data, "mood")?.let { mood = Mood.parse(it) }
+                        }
+                        else -> Unit
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Nothing arrived at all: this is an outage like any other.
+            if (heard.isEmpty()) return@withContext Attempt(code, offline())
+        }
+
+        // A 200 carrying something that is not an event stream at all — a
+        // proxy's HTML error page is the one seen in production — yields no
+        // frames. Without this it would read as "he had nothing to say",
+        // which is a legitimate answer from /event and never from /turn.
+        if (!sawDone && heard.isEmpty()) return@withContext Attempt(code, offline())
+
+        // `done` is the authority when it arrived, because the server knows
+        // the whole reply; the sentences are the fallback when it did not.
+        val spoken = (finished ?: heard.toString()).takeIf { it.isNotBlank() }
+        Attempt(code, Reply(spoken, mood))
+    }
+
+    /** One string field out of an SSE frame's JSON payload. */
+    private fun field(data: String, name: String): String? = try {
+        (LENIENT.parseToJsonElement(data) as JsonObject)[name]
+            ?.takeIf { it !is JsonNull }
+            ?.jsonPrimitive?.content
+    } catch (_: Exception) {
+        null
+    }
 
     override suspend fun event(kind: String, payload: Map<String, Any?>): Reply =
         post(

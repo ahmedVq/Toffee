@@ -8,6 +8,7 @@ import { serviceClient } from "./db.ts";
 import { runTurn, type ToolResult, type ToolSpec } from "./llm.ts";
 import { buildContext, renderSystem } from "./persona.ts";
 import { noteSpend } from "./governor.ts";
+import { sseResponse } from "./stream.ts";
 import { ALL_TOOLS, makeDispatcher } from "./tools/index.ts";
 import type { Mood, Msg } from "./types.ts";
 
@@ -61,29 +62,46 @@ export async function turnHandler(
   const run = deps.runner ?? (runTurn as unknown as TurnRunner);
   const { dispatch, mood } = makeDispatcher();
 
-  // What he just said is what the recall runs against, so the facts that
-  // arrive are the ones this turn is about. An event has no utterance and
-  // gets the seeded history alone.
-  const [ctx, history] = await Promise.all([buildContext(text), recentHistory()]);
+  // Everything from here on goes out as it happens. The handler returns as
+  // soon as the stream exists, so the work below finishes AFTER the response
+  // has been handed back — which is the point, and is also why anything
+  // checking its side effects has to read the stream to the end first.
+  return sseResponse(async (emit) => {
+    // What he just said is what the recall runs against, so the facts that
+    // arrive are the ones this turn is about. An event has no utterance and
+    // gets the seeded history alone.
+    const [ctx, history] = await Promise.all([buildContext(text), recentHistory()]);
 
-  const result = await run({
-    system: renderSystem(ctx),
-    history: [...history, { role: "user", content: text }],
-    tools: ALL_TOOLS,
-    dispatch,
+    // The face is set by a tool, and the persona tells him to set it before
+    // he speaks. Emitting it the moment the tool runs is what lets the first
+    // sentence be spoken in the mood it was written in, rather than in the
+    // previous one.
+    const watched = async (name: string, args: unknown) => {
+      const result = await dispatch(name, args);
+      if (name === "set_mood") emit.mood(mood());
+      return result;
+    };
+
+    const result = await run({
+      system: renderSystem(ctx),
+      history: [...history, { role: "user", content: text }],
+      tools: ALL_TOOLS,
+      dispatch: watched,
+      onSentence: (s) => emit.text(s),
+    });
+
+    // Spend is recorded even when the reply was a fallback: a failed call
+    // still costs, and the governor's cost gate has to see it.
+    await noteSpend(result.spent.in, result.spent.out);
+
+    await append("user", text);
+    await append("model", result.reply);
+
+    const done: { reply: string; mood: Mood; calls: ToolResult[] } = {
+      reply: result.reply,
+      mood: mood(),
+      calls: result.calls,
+    };
+    return done;
   });
-
-  // Spend is recorded even when the reply was a fallback: a failed call still
-  // costs, and the governor's cost gate has to see it.
-  await noteSpend(result.spent.in, result.spent.out);
-
-  await append("user", text);
-  await append("model", result.reply);
-
-  const payload: { reply: string; mood: Mood; calls: ToolResult[] } = {
-    reply: result.reply,
-    mood: mood(),
-    calls: result.calls,
-  };
-  return Response.json(payload);
 }

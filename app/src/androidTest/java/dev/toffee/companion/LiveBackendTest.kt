@@ -392,13 +392,30 @@ class LiveBackendTest {
         // measurement wearing the same name. Briefly replaced with a memory
         // probe, which produced a much longer reply and an apparent 2.3s
         // regression that was really just more tokens.
+        //
+        // It was changed once more, deliberately, when /turn began to
+        // stream: at one sentence, time-to-first-word and time-to-done are
+        // the same number and the streaming win is invisible. Two sentences
+        // separates them. So turn_ms before 2026-11-22 (2957ms, 3051ms) is
+        // NOT comparable with turn_ms after it. turn_first_ms has no
+        // predecessor at all -- before streaming, the first word arrived
+        // only when the whole reply did, so it was turn_ms by construction.
         val started = System.currentTimeMillis()
-        val reply = client.turn("Say one short sentence back to me.")
+        // The number that actually decides whether a joke lands. The whole
+        // reply still has to arrive, but Ahmed stops waiting the moment the
+        // first word comes out of the speaker -- and since /turn streams,
+        // that is no longer the same measurement as the turn's length.
+        var firstAt = 0L
+        val reply = client.turn("Say two short sentences back to me.") { _, _ ->
+            if (firstAt == 0L) firstAt = System.currentTimeMillis()
+        }
         val took = System.currentTimeMillis() - started
+        val toFirst = if (firstAt == 0L) -1L else firstAt - started
 
         context.getSharedPreferences("toffee.bench", android.content.Context.MODE_PRIVATE)
             .edit()
             .putLong("turn_ms", took)
+            .putLong("turn_first_ms", toFirst)
             .putString("turn_reply", reply.speak ?: "(silence)")
             .putBoolean("turn_offline", reply.offline)
             .apply()

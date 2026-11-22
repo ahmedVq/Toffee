@@ -58,11 +58,41 @@ class ToffeeClientTest {
 
     private fun reply(json: String) = MockResponse().setBody(json)
 
+    private val br = 10.toChar()
+
+    /**
+     * A `/turn` response in the real wire format: Server-Sent Events, one
+     * frame per sentence, ending in `done`.
+     *
+     * These tests used to serve a single JSON object, which is what /turn
+     * answered with before it streamed. Serving the old shape would pass
+     * while the device went silent -- the exact failure this file already
+     * carries a scar from, where the tests invented the field name as
+     * confidently as the client had.
+     */
+    private fun stream(vararg frames: Pair<String, String>): MockResponse {
+        val body = frames.joinToString("") { (event, data) ->
+            "event: $event$br" + "data: $data$br$br"
+        }
+        return MockResponse()
+            .setHeader("Content-Type", "text/event-stream")
+            .setBody(body)
+    }
+
+    /** The common case: some sentences, then done. */
+    private fun turnStream(reply: String, mood: String, vararg sentences: String): MockResponse {
+        val frames = mutableListOf<Pair<String, String>>()
+        frames += "mood" to """{"mood":"$mood"}"""
+        for (s in sentences) frames += "text" to """{"text":"$s"}"""
+        frames += "done" to """{"reply":"$reply","mood":"$mood","calls":[]}"""
+        return stream(*frames.toTypedArray())
+    }
+
     // ------------------------------------------------------------ the happy path
 
     @Test
     fun `turn posts the text and the bearer token`() = runBlocking {
-        server.enqueue(reply("""{"reply":"You have one task.","mood":"smug","calls":[]}"""))
+        server.enqueue(turnStream("You have one task.", "smug", "You have one task."))
 
         val r = client().turn("what am I meant to be doing")
 
@@ -109,7 +139,7 @@ class ToffeeClientTest {
 
     @Test
     fun `a reply with no mood field is neutral`() = runBlocking {
-        server.enqueue(reply("""{"reply":"The thinking part of me is unavailable."}"""))
+        server.enqueue(stream("done" to """{"reply":"The thinking part of me is unavailable."}"""))
         val r = client().turn("hello")
         assertEquals(Mood.NEUTRAL, r.mood)
         assertNotNull(r.speak)
@@ -117,13 +147,13 @@ class ToffeeClientTest {
 
     @Test
     fun `a reply with an unknown mood is neutral`() = runBlocking {
-        server.enqueue(reply("""{"reply":"hm","mood":"apoplectic"}"""))
+        server.enqueue(turnStream("hm", "apoplectic", "hm"))
         assertEquals(Mood.NEUTRAL, client().turn("hello").mood)
     }
 
     @Test
     fun `a reply with unknown extra fields still parses`() = runBlocking {
-        server.enqueue(reply("""{"reply":"hm","mood":"sad","calls":[],"spent":{"in":1,"out":2}}"""))
+        server.enqueue(stream("done" to """{"reply":"hm","mood":"sad","calls":[],"spent":{"in":1,"out":2}}"""))
         assertEquals(Mood.SAD, client().turn("hello").mood)
     }
 
@@ -157,7 +187,7 @@ class ToffeeClientTest {
     fun `the client recovers on the next request after an outage`() = runBlocking {
         val c = client()
         server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_START))
-        server.enqueue(reply("""{"reply":"There you are.","mood":"happy"}"""))
+        server.enqueue(turnStream("There you are.", "happy", "There you are."))
 
         assertTrue("the first attempt should fail", c.turn("hello").offline)
 
@@ -187,7 +217,7 @@ class ToffeeClientTest {
     fun `a 401 refreshes once and retries once`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(401))
         server.enqueue(reply("""{"access_token":"acc-2","refresh_token":"ref-2","expires_in":3600}"""))
-        server.enqueue(reply("""{"reply":"fine","mood":"neutral"}"""))
+        server.enqueue(turnStream("fine", "neutral", "fine"))
 
         val r = client().turn("hello")
 
@@ -228,7 +258,7 @@ class ToffeeClientTest {
     // as confidently as the client had. These pin the real wire format.
     @Test
     fun `turn speaks through the reply field`() = runBlocking {
-        server.enqueue(reply("""{"reply":"You have one task.","mood":"smug","calls":[]}"""))
+        server.enqueue(turnStream("You have one task.", "smug", "You have one task."))
         assertEquals("You have one task.", client().turn("x").speak)
     }
 
@@ -258,5 +288,110 @@ class ToffeeClientTest {
     fun `it does not say the same thing every time`() {
         val seen = (1..60).map { Offline.line() }.toSet()
         assertTrue("only ${seen.size} distinct lines in 60 draws", seen.size >= 3)
+    }
+
+    // ------------------------------------------------------------- streaming
+
+    @Test
+    fun `each sentence is handed over as it arrives`() = runBlocking {
+        server.enqueue(turnStream("One. Two. Three.", "neutral", "One.", "Two.", "Three."))
+
+        val heard = mutableListOf<String>()
+        val r = client().turn("say three things") { s, _ -> heard += s }
+
+        assertEquals(listOf("One.", "Two.", "Three."), heard)
+        assertEquals("One. Two. Three.", r.speak)
+    }
+
+    @Test
+    fun `a sentence carries the mood in force when it arrived`() = runBlocking {
+        server.enqueue(
+            stream(
+                "mood" to """{"mood":"smug"}""",
+                "text" to """{"text":"Obviously."}""",
+                "mood" to """{"mood":"frustrated"}""",
+                "text" to """{"text":"Fine."}""",
+                "done" to """{"reply":"Obviously. Fine.","mood":"frustrated"}""",
+            ),
+        )
+
+        val moods = mutableListOf<Mood>()
+        client().turn("well?") { _, m -> moods += m }
+
+        assertEquals(listOf(Mood.SMUG, Mood.FRUSTRATED), moods)
+    }
+
+    /**
+     * Review Focus 3. He has already said those sentences out loud, so
+     * answering with the offline line would be the tablet contradicting
+     * itself in front of Ahmed.
+     */
+    @Test
+    fun `a stream cut off mid-reply keeps what arrived`() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody("event: text" + br + "data: {\"text\":\"Half a thought.\"}" + br + br)
+                .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_END),
+        )
+
+        val heard = mutableListOf<String>()
+        val r = client().turn("go on") { s, _ -> heard += s }
+
+        assertEquals(listOf("Half a thought."), heard)
+        assertEquals("Half a thought.", r.speak)
+        assertFalse("he said it; this is not an outage", r.offline)
+    }
+
+    /** Nothing arrived at all. That IS an outage, and must say so. */
+    @Test
+    fun `a stream that yields nothing at all is offline`() = runBlocking {
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(""),
+        )
+        val r = client().turn("hello")
+        assertTrue(r.offline)
+        assertEquals(Mood.OFFLINE, r.mood)
+    }
+
+    /**
+     * The whole point, and the one thing a buffering client would still pass
+     * every other test in this file with.
+     *
+     * The body is throttled so the second frame physically cannot arrive at
+     * the same time as the first. A client that read the whole body before
+     * parsing would report both sentences at the same instant; one that
+     * parses as it reads reports them a throttle period apart.
+     *
+     * `setBodyDelay` is the wrong tool here and was tried first: it delays
+     * the start of the body, so buffered and streamed are indistinguishable.
+     */
+    @Test
+    fun `sentences are handed over as they arrive, not all at the end`() = runBlocking {
+        val frames = "event: text" + br + "data: {\"text\":\"One.\"}" + br + br +
+            "event: text" + br + "data: {\"text\":\"Two.\"}" + br + br
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(frames)
+                .throttleBody(32, 200, TimeUnit.MILLISECONDS)
+                .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_END),
+        )
+
+        val at = mutableListOf<Long>()
+        client(timeoutMs = 8_000).turn("go") { _, _ -> at += System.currentTimeMillis() }
+
+        assertEquals("both sentences should have been handed over", 2, at.size)
+        assertTrue(
+            "both arrived at once, so the body was buffered before parsing",
+            at[1] - at[0] >= 100,
+        )
+    }
+
+    /** /event is not streamed and must keep answering in plain JSON. */
+    @Test
+    fun `event is still a single json reply`() = runBlocking {
+        server.enqueue(reply("""{"speak":"Back, are you.","mood":"frustrated"}"""))
+        assertEquals("Back, are you.", client().event("arrived").speak)
     }
 }

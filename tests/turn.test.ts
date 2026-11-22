@@ -27,6 +27,33 @@ const post = (body: unknown) =>
     body: JSON.stringify(body),
   });
 
+/**
+ * Reads the stream to the end and returns the `done` payload.
+ *
+ * Draining matters beyond reading the reply: /turn now returns as soon as
+ * the stream exists, and the appending, the spend accounting and the tool
+ * calls all happen while it is being consumed. A test that checked the
+ * database without draining would be racing the handler.
+ */
+async function drain(res: Response): Promise<Record<string, unknown>> {
+  const text = await new Response(res.body).text();
+  // Built from a code point because editing passes keep turning the escape
+  // into a real line break in the source -- the same trap MaintenanceActivity
+  // already works around.
+  const br = String.fromCharCode(10);
+  const blocks = text.split(br + br).filter((b) => b.trim().length > 0);
+  const last = blocks.at(-1) ?? "";
+  assertEquals(/^event: (.+)$/m.exec(last)?.[1], "done", `stream did not end in done: ${text}`);
+  return JSON.parse(/^data: (.+)$/m.exec(last)?.[1] ?? "{}");
+}
+
+/** Every sentence that went out, in order. */
+async function sentences(res: Response): Promise<string[]> {
+  const text = await new Response(res.body).text();
+  const re = new RegExp("^event: text" + String.fromCharCode(10) + "data: (.+)$", "gm");
+  return [...text.matchAll(re)].map((m) => JSON.parse(m[1]).text as string);
+}
+
 /** A runner that just replies, calling no tools. */
 const plainRunner = (reply: string): TurnRunner => () =>
   Promise.resolve({ reply, calls: [], spent: { in: 11, out: 13 } });
@@ -49,6 +76,7 @@ Deno.test("a turn appends both sides to conversation", async () => {
     { runner: plainRunner(`${MARK} unfortunately`) },
   );
   assertEquals(res.status, 200);
+  await drain(res);
 
   const { data } = await db.from("conversation").select("role, content")
     .like("content", `${MARK}%`).order("at", { ascending: true });
@@ -65,6 +93,7 @@ Deno.test("'add buy milk to my list' results in a task existing", async () => {
     { runner: toolRunner("add_task", { title: `${MARK} buy milk` }, "Noted. Thrilling.") },
   );
   assertEquals(res.status, 200);
+  await drain(res);
 
   const { data } = await db.from("tasks").select("title").like("title", `${MARK}%`);
   assertEquals(data?.length, 1, "the tool must actually have run");
@@ -81,7 +110,7 @@ Deno.test("'what am I meant to be doing' calls listTasks", async () => {
     return { reply: "One thing. One.", calls: [], spent: { in: 1, out: 1 } };
   };
 
-  await turnHandler(post({ text: `${MARK} what am I meant to be doing` }), { runner });
+  await drain(await turnHandler(post({ text: `${MARK} what am I meant to be doing` }), { runner }));
   const tasks = sawResult as { title: string }[];
   assert(Array.isArray(tasks), "list_tasks must return an array");
   assert(
@@ -97,7 +126,7 @@ Deno.test("the reply carries a mood the face can render", async () => {
     post({ text: `${MARK} how are you` }),
     { runner: toolRunner("set_mood", { mood: "smug" }, "Never better.") },
   );
-  const body = await res.json();
+  const body = await drain(res);
   assertEquals(body.mood, "smug");
   await wipe();
 });
@@ -108,7 +137,7 @@ Deno.test("mood defaults to neutral when the model does not set one", async () =
     post({ text: `${MARK} hello` }),
     { runner: plainRunner("Hello.") },
   );
-  assertEquals((await res.json()).mood, "neutral");
+  assertEquals((await drain(res)).mood, "neutral");
   await wipe();
 });
 
@@ -128,7 +157,7 @@ Deno.test("an empty text body is rejected with 400, not a crash", async () => {
 // silently — the one failure nobody notices until the bill or the outage.
 Deno.test("a completed turn increases today's row in llm_spend", async () => {
   await wipe();
-  await turnHandler(post({ text: `${MARK} hello` }), { runner: plainRunner("Hi.") });
+  await drain(await turnHandler(post({ text: `${MARK} hello` }), { runner: plainRunner("Hi.") }));
 
   const { data } = await db.from("llm_spend").select("calls, tokens_in, tokens_out").eq("day", today);
   assertEquals(data?.length, 1);
@@ -136,4 +165,27 @@ Deno.test("a completed turn increases today's row in llm_spend", async () => {
   assertEquals(data![0].tokens_in, 11);
   assertEquals(data![0].tokens_out, 13);
   await wipe();
+});
+
+// The whole point of the change, asserted at the level Ahmed experiences it:
+// the sentences leave the server one at a time, in order, before the turn is
+// over.
+Deno.test("each sentence goes out as its own event", async () => {
+  await wipe();
+  const runner: TurnRunner = (opts) => {
+    opts.onSentence?.("One.");
+    opts.onSentence?.("Two.");
+    return Promise.resolve({ reply: "One. Two.", calls: [], spent: { in: 1, out: 1 } });
+  };
+  const res = await turnHandler(post({ text: `${MARK} say two things` }), { runner });
+  assertEquals(await sentences(res), ["One.", "Two."]);
+  await wipe();
+});
+
+// A bad request is not a stream. The tablet has to be able to tell a refusal
+// from a turn, and a 400 carrying an event stream reads as neither.
+Deno.test("a rejected request is still plain JSON", async () => {
+  const res = await turnHandler(post({ text: "" }), { runner: plainRunner("x") });
+  assertEquals(res.status, 400);
+  assertEquals(res.headers.get("content-type")?.includes("json"), true);
 });

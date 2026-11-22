@@ -44,8 +44,11 @@ class AndroidVoice(
     @Volatile private var pending: Pair<String, Mood>? = null
 
     @Volatile private var utterance = 0L
-    @Volatile override var speaking: Boolean = false
-        private set
+
+    /** Not a boolean: a streamed reply is several queued utterances, and the
+     *  first one finishing must not report him silent. See [SpeechQueue]. */
+    private val queue = SpeechQueue()
+    override val speaking: Boolean get() = queue.speaking
 
     private val reported = AtomicBoolean(false)
 
@@ -82,12 +85,19 @@ class AndroidVoice(
         val tts = if (name == null) TextToSpeech(app, ::onInit) else TextToSpeech(app, ::onInit, name)
         engine = tts
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) { speaking = true }
-            override fun onDone(utteranceId: String?) { speaking = false }
+            // onStart is not what makes him "speaking": say() does, the
+            // moment the sentence is handed over. Waiting for onStart leaves
+            // a window where a tap sees silence and opens the microphone.
+            override fun onStart(utteranceId: String?) = Unit
+            override fun onDone(utteranceId: String?) { queue.finished(utteranceId) }
             @Deprecated("the signature the platform still calls on API 27")
-            override fun onError(utteranceId: String?) { speaking = false }
-            override fun onError(utteranceId: String?, errorCode: Int) { speaking = false }
-            override fun onStop(utteranceId: String?, interrupted: Boolean) { speaking = false }
+            override fun onError(utteranceId: String?) { queue.finished(utteranceId) }
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                queue.finished(utteranceId)
+            }
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                queue.finished(utteranceId)
+            }
         })
     }
 
@@ -124,7 +134,7 @@ class AndroidVoice(
         if (reported.compareAndSet(false, true)) onFailure(why)
     }
 
-    override fun say(text: String, mood: Mood) {
+    override fun say(text: String, mood: Mood, interrupt: Boolean) {
         if (dead || text.isBlank()) return
         val tts = engine
         if (tts == null || !ready) {
@@ -137,21 +147,28 @@ class AndroidVoice(
         tts.setSpeechRate(rate)
 
         val id = "toffee-" + (++utterance)
-        // QUEUE_FLUSH, because the face has already changed to the new line
-        // and a voice still finishing the old one reads as a malfunction.
+        // FLUSH replaces what is being said; ADD continues it. A streamed
+        // reply arrives a sentence at a time and must queue, or every reply
+        // would speak only its last sentence while the caption showed all of
+        // it.
+        val mode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         val result = runCatching {
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), id)
+            tts.speak(text, mode, Bundle(), id)
         }.getOrDefault(TextToSpeech.ERROR)
 
         if (result == TextToSpeech.ERROR) {
             fail("The speech engine stopped answering. You get subtitles.")
         } else {
-            speaking = true
+            // Before the engine says it started: a tap in that window would
+            // otherwise see silence and open the microphone over him.
+            queue.queued(id)
         }
     }
 
     override fun hush() {
-        speaking = false
+        // Everything outstanding, not just the current sentence: stop()
+        // clears the whole queue, and a streamed reply has several in it.
+        queue.silenced()
         pending = null
         engine?.let { runCatching { it.stop() } }
     }

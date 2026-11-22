@@ -68,11 +68,45 @@ class Brain(
     suspend fun onStillHere(minutes: Int) =
         ask { agent.event("still_here", mapOf("minutes" to minutes)) }
 
-    /** He said something. */
+    /**
+     * He said something.
+     *
+     * The reply is spoken a sentence at a time, as it is written, rather
+     * than after it is finished. Ahmed's first complaint after using this
+     * was "it was too slow", and most of the wait was the tablet sitting
+     * silent with the first sentence already available.
+     *
+     * The first sentence interrupts whatever came before; every later one
+     * queues behind it, because they are one thought.
+     */
     suspend fun say(text: String) {
         if (!usable()) return inert()
         _state.value = _state.value.copy(mood = Mood.LISTENING, listening = true)
-        ask { agent.turn(text) }
+
+        val caption = StringBuilder()
+        var spoken = 0
+
+        val reply = speaking.withLock {
+            agent.turn(text) { sentence, mood ->
+                clearJob?.cancel()
+                if (caption.isNotEmpty()) caption.append(' ')
+                caption.append(sentence)
+                val first = spoken++ == 0
+                // The caption grows as he talks, so the screen and the
+                // speaker never disagree about what has been said.
+                _state.value = FaceState(mood = mood, line = caption.toString(), listening = false)
+                voice.say(sentence, mood, interrupt = first)
+            }
+        }
+
+        // Nothing streamed: the agent was unreachable, or it chose silence.
+        // That is exactly what show() is for, including saying the line.
+        if (spoken == 0) return show(reply)
+
+        // It is already said and already on screen. All that is left is the
+        // final mood — the model may have changed its face after its last
+        // sentence — and the timer that clears the caption.
+        settle(reply.mood, reply.speak ?: caption.toString())
     }
 
     /**
@@ -197,11 +231,23 @@ class Brain(
             return
         }
         clearJob?.cancel()
-        _state.value = FaceState(mood = reply.mood, line = line, listening = false)
         // The caption and the speaker carry the same words, always. A line
         // shown but not said is one he can miss from two feet away, which is
         // the whole failure a reminder must not have.
         voice.say(line, reply.mood)
+        settle(reply.mood, line)
+    }
+
+    /**
+     * The face as it is left after a line: the expression, the words, and
+     * the timer that takes the words away again.
+     *
+     * Shared with the streaming path, which has already said and shown
+     * everything and must not say it a second time.
+     */
+    private fun settle(mood: Mood, line: String) {
+        clearJob?.cancel()
+        _state.value = FaceState(mood = mood, line = line, listening = false)
         clearJob = scope.launch {
             delay(LINE_TTL_MS)
             // The sentence goes; the expression stays. A face that snaps back

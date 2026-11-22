@@ -16,13 +16,20 @@ import dev.toffee.companion.face.Mood
 interface Voice {
 
     /**
-     * Say [text] in [mood], interrupting whatever is being said now.
+     * Say [text] in [mood].
      *
-     * Interrupting is the right default: the face has already changed to the
-     * new line, and a voice still finishing the old one is worse than a
-     * sentence cut short.
+     * @param interrupt whether this replaces what is being said or follows
+     *        it. Interrupting is the right default: the face has already
+     *        changed to the new line, and a voice still finishing the old one
+     *        is worse than a sentence cut short.
+     *
+     *        Streaming is the exception and the reason this parameter exists.
+     *        A reply now arrives a sentence at a time, and the second
+     *        sentence of one thought must queue behind the first — flushing
+     *        would make every reply say only its last sentence, out loud,
+     *        while the caption showed all of it.
      */
-    fun say(text: String, mood: Mood)
+    fun say(text: String, mood: Mood, interrupt: Boolean = true)
 
     /** Stop immediately and say nothing more. */
     fun hush()
@@ -39,7 +46,7 @@ interface Voice {
  * had a voice at all.
  */
 object SilentVoice : Voice {
-    override fun say(text: String, mood: Mood) = Unit
+    override fun say(text: String, mood: Mood, interrupt: Boolean) = Unit
     override fun hush() = Unit
     override val speaking: Boolean get() = false
 }

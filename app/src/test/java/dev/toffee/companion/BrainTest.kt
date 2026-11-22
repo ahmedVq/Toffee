@@ -37,9 +37,15 @@ class BrainTest {
         var reply: Reply = Reply("something", Mood.NEUTRAL)
         var delayMs: Long = 0
 
-        override suspend fun turn(text: String): Reply {
+        /** Sentences this agent streams before returning [reply]. Empty
+         *  means it answered in one piece, as /event still does and as an
+         *  unreachable backend does. */
+        var sentences: List<Pair<String, Mood>> = emptyList()
+
+        override suspend fun turn(text: String, onSentence: (String, Mood) -> Unit): Reply {
             turns += text
             if (delayMs > 0) delay(delayMs)
+            for ((s, m) in sentences) onSentence(s, m)
             return reply
         }
 
@@ -58,9 +64,17 @@ class BrainTest {
 
     private class RecordingVoice : Voice {
         val said = mutableListOf<Pair<String, Mood>>()
+
+        /** Whether each line replaced what came before it or queued behind
+         *  it. A streamed reply must queue, or he speaks only its last
+         *  sentence while the caption shows the whole thing. */
+        val interrupts = mutableListOf<Boolean>()
         var hushed = false
         override var speaking = false
-        override fun say(text: String, mood: Mood) { said += text to mood }
+        override fun say(text: String, mood: Mood, interrupt: Boolean) {
+            said += text to mood
+            interrupts += interrupt
+        }
         override fun hush() { hushed = true }
     }
 
@@ -464,5 +478,122 @@ class BrainTest {
         assertEquals(listOf("still_here"), agent.events.map { it.first })
         assertEquals(90, agent.events[0].second["minutes"])
         assertEquals(Mood.SMUG, brain.state.value.mood)
+    }
+
+    // ---- streaming: he starts talking before he has finished thinking ----
+
+    @Test
+    fun `each sentence is spoken as it arrives`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply {
+            sentences = listOf("One." to Mood.SMUG, "Two." to Mood.SMUG)
+            reply = Reply("One. Two.", Mood.SMUG)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.say("go on then")
+        advanceTimeBy(1_000)
+
+        assertEquals(listOf("One.", "Two."), voice.said.map { it.first })
+    }
+
+    /** The trap: QUEUE_FLUSH on every sentence would make him say only the
+     *  last one aloud while the caption showed the whole reply. */
+    @Test
+    fun `the first sentence interrupts and the rest queue behind it`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply {
+            sentences = listOf("One." to Mood.NEUTRAL, "Two." to Mood.NEUTRAL, "Three." to Mood.NEUTRAL)
+            reply = Reply("One. Two. Three.", Mood.NEUTRAL)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.say("say three things")
+        advanceTimeBy(1_000)
+
+        assertEquals(listOf(true, false, false), voice.interrupts)
+    }
+
+    @Test
+    fun `the caption grows as the sentences arrive`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply {
+            sentences = listOf("One." to Mood.NEUTRAL, "Two." to Mood.NEUTRAL)
+            reply = Reply("One. Two.", Mood.NEUTRAL)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.say("say two things")
+        advanceTimeBy(1_000)
+
+        assertEquals("One. Two.", brain.state.value.line)
+    }
+
+    /** A sentence must be spoken in the mood that was set for it, not in
+     *  the one the turn happened to end in. */
+    @Test
+    fun `a sentence is spoken in the mood in force when it arrived`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply {
+            sentences = listOf("Obviously." to Mood.SMUG, "Fine." to Mood.FRUSTRATED)
+            reply = Reply("Obviously. Fine.", Mood.FRUSTRATED)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.say("well?")
+        advanceTimeBy(1_000)
+
+        assertEquals(listOf(Mood.SMUG, Mood.FRUSTRATED), voice.said.map { it.second })
+    }
+
+    /** Review Focus 3: the stream stops after one sentence. He must be left
+     *  coherent -- not listening, with what he said still on screen. */
+    @Test
+    fun `a stream that stops halfway leaves him coherent`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply {
+            sentences = listOf("Half a thought." to Mood.SLEEPY)
+            // What ToffeeClient returns when the connection died mid-stream:
+            // the sentences that arrived, and no more.
+            reply = Reply("Half a thought.", Mood.SLEEPY)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.say("go on")
+        advanceTimeBy(1_000)
+
+        assertEquals("Half a thought.", brain.state.value.line)
+        assertFalse("he must not be left listening", brain.state.value.listening)
+        assertEquals(1, voice.said.size)
+    }
+
+    /** Nothing streamed at all -- offline, or the governor chose silence --
+     *  must still behave exactly as it did before streaming existed. */
+    @Test
+    fun `a reply that never streamed is still said once`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply { reply = Reply("Nothing doing.", Mood.OFFLINE) }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.say("hello")
+        advanceTimeBy(1_000)
+
+        assertEquals(listOf("Nothing doing." to Mood.OFFLINE), voice.said)
+        assertEquals("Nothing doing.", brain.state.value.line)
+    }
+
+    @Test
+    fun `a streamed reply is not said a second time when it finishes`() = runTest {
+        val voice = RecordingVoice()
+        val agent = FakeAgent().apply {
+            sentences = listOf("One." to Mood.NEUTRAL)
+            reply = Reply("One.", Mood.NEUTRAL)
+        }
+        val brain = Brain(agent, ReminderInbox(MemoryAnnounced()), { SessionState.Active }, this, voice)
+
+        brain.say("once")
+        advanceTimeBy(1_000)
+
+        assertEquals("he said the whole reply again after streaming it", 1, voice.said.size)
     }
 }
