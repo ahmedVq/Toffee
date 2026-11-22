@@ -7,8 +7,41 @@
 // is cheaper than a round trip, and it means the agent cannot forget to look
 // before making a claim.
 
-import { serviceClient } from "./db.ts";
-import type { Ctx } from "./types.ts";
+import { serviceClient, toMemory } from "./db.ts";
+import { recall as recallMemories } from "./tools/memory.ts";
+import type { Ctx, Memory } from "./types.ts";
+
+/** The category the seeded history is written under. One category, so the
+ *  whole set stays addressable when a fact stops being true. */
+export const CORE_CATEGORY = "core";
+
+/** How many recalled facts ride along with a turn. Enough to be specific,
+ *  few enough that they do not crowd out the live state underneath them. */
+export const RECALL_LIMIT = 5;
+
+/**
+ * The two lookups, injectable.
+ *
+ * Same reason `memory.ts` lets an `Embedder` be passed: the real ones need
+ * `Supabase.ai` and a database, and a test for how the prompt is assembled
+ * should need neither.
+ */
+export type ContextDeps = {
+  recall?: (query: string, limit: number) => Promise<Memory[]>;
+  core?: () => Promise<Memory[]>;
+};
+
+/** The seeded history, oldest first, so the prompt reads as a biography
+ *  rather than as whatever was written last. */
+async function coreFacts(): Promise<Memory[]> {
+  const { data, error } = await serviceClient()
+    .from("memories")
+    .select("id, fact, category")
+    .eq("category", CORE_CATEGORY)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`reading core facts failed: ${error.message}`);
+  return (data ?? []).map(toMemory);
+}
 
 export const SYSTEM_PROMPT = `
 You are Toffee: a small, deeply unimpressed machine that lives on Ahmed's desk
@@ -67,7 +100,25 @@ export function renderSystem(ctx: Ctx): string {
     ? `The last thing you said was: "${ctx.lastSaid}" — do not repeat it.`
     : "You have not said anything recently.";
 
+  const bullet = (f: string) => `- ${f}`;
+
+  // The evidence rule covers memory too. These facts are things he may
+  // point at; an empty list has to say so plainly, because a model told
+  // nothing about someone will cheerfully invent something.
+  const history = ctx.coreFacts.length === 0 && ctx.relevantFacts.length === 0
+    ? "You do not know anything about him yet. Do not pretend otherwise."
+    : [
+      ctx.coreFacts.length > 0
+        ? `WHAT YOU KNOW ABOUT HIM\n${ctx.coreFacts.map(bullet).join("\n")}`
+        : null,
+      ctx.relevantFacts.length > 0
+        ? `WHAT THIS REMINDS YOU OF\n${ctx.relevantFacts.map(bullet).join("\n")}`
+        : null,
+    ].filter(Boolean).join("\n\n");
+
   return `${SYSTEM_PROMPT}
+
+${history}
 
 WHAT YOU KNOW RIGHT NOW
 Current time: ${ctx.now}
@@ -80,10 +131,29 @@ ${last}`;
 /** Reads the live state the prompt needs. Anything unavailable degrades to a
  * null rather than failing the turn — a missing battery reading is not a
  * reason to go silent. */
-export async function buildContext(): Promise<Ctx> {
+export async function buildContext(
+  said?: string,
+  deps: ContextDeps = {},
+): Promise<Ctx> {
   const db = serviceClient();
 
-  const [presenceRes, tasksRes, saidRes] = await Promise.all([
+  const core = deps.core ?? coreFacts;
+  const recall = deps.recall ??
+    ((q: string, limit: number) => recallMemories(q, limit));
+
+  // ONE round trip's worth, not two. Written as two awaits first, which
+  // quietly added a whole network round trip to the front of every turn —
+  // in the same change meant to make him faster. Everything the prompt
+  // needs is independent, so everything the prompt needs goes at once.
+  //
+  // Nothing he said means nothing to recall against — every event takes
+  // this path — but the seeded history still travels, or he forgets who
+  // Ahmed is the moment Ahmed stops talking to him.
+  const [coreRes, relevantRes, presenceRes, tasksRes, saidRes] = await Promise.all([
+    core().catch(() => [] as Memory[]),
+    said && said.trim().length > 0
+      ? recall(said, RECALL_LIMIT).catch(() => [] as Memory[])
+      : Promise.resolve([] as Memory[]),
     db.from("presence_events").select("present, at").order("at", { ascending: false }).limit(1),
     db.from("tasks").select("id", { count: "exact", head: true }).eq("status", "open"),
     db.from("said_log").select("said").order("at", { ascending: false }).limit(1),
@@ -102,5 +172,7 @@ export async function buildContext(): Promise<Ctx> {
     tabletBattery: null, // supplied by the tablet on /event; unknown server-side
     openTaskCount: tasksRes.count ?? 0,
     lastSaid: (saidRes.data?.[0] as { said: string } | undefined)?.said ?? null,
+    coreFacts: coreRes.map((m) => m.fact),
+    relevantFacts: relevantRes.map((m) => m.fact),
   };
 }

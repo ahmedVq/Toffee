@@ -1,4 +1,4 @@
-import { assert, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildContext,
   renderSystem,
@@ -13,6 +13,8 @@ const ctx: Ctx = {
   tabletBattery: 6,
   openTaskCount: 4,
   lastSaid: "You have been staring at that for an hour.",
+  coreFacts: [],
+  relevantFacts: [],
 };
 
 Deno.test("renderSystem includes the current time, presence and open task count", () => {
@@ -66,4 +68,76 @@ Deno.test("buildContext reads real state without throwing", async () => {
   assert(typeof live.now === "string" && live.now.length > 0);
   assert(typeof live.present === "boolean");
   assert(typeof live.openTaskCount === "number");
+});
+
+// The gap behind "give him a history of me": the memories table and its tool
+// have existed since the backend was built, but nothing ever put a memory in
+// front of the model. It could only remember by choosing to go and look,
+// which meant it mostly did not, and every turn started from nothing.
+Deno.test("core facts reach the prompt without being asked for", () => {
+  const prompt = renderSystem({
+    ...ctx,
+    coreFacts: ["He built me to be unimpressed by him."],
+  });
+  assertStringIncludes(prompt, "He built me to be unimpressed by him.");
+});
+
+Deno.test("what he just said is what gets recalled against", async () => {
+  const asked: string[] = [];
+  await buildContext("did I ever finish the invoice", {
+    recall: (q: string) => {
+      asked.push(q);
+      return Promise.resolve([]);
+    },
+    core: () => Promise.resolve([]),
+  });
+  assertEquals(asked, ["did I ever finish the invoice"]);
+});
+
+// An event -- he arrived, a reminder fired -- has no utterance to recall
+// against. Core facts must still arrive, or he forgets who Ahmed is the
+// moment Ahmed is not talking to him.
+Deno.test("an event with nothing said still gets the core facts", async () => {
+  let recalled = false;
+  const built = await buildContext(undefined, {
+    recall: () => {
+      recalled = true;
+      return Promise.resolve([]);
+    },
+    core: () => Promise.resolve([{ id: "1", fact: "He is Ahmed.", category: "core" }]),
+  });
+  assertEquals(built.coreFacts, ["He is Ahmed."]);
+  assert(!recalled, "there was nothing said, so there was nothing to recall against");
+});
+
+// Review Focus 5. A seeded fact is a claim about Ahmed that outlives the
+// week it was true in, so it has to be addressable -- which means it must be
+// distinguishable from what the model learned on its own.
+Deno.test("a core fact is kept apart from what he has since learned", () => {
+  const prompt = renderSystem({
+    ...ctx,
+    coreFacts: ["He is Ahmed."],
+    relevantFacts: ["He abandoned a pomodoro after four minutes."],
+  });
+  const core = prompt.indexOf("He is Ahmed.");
+  const learned = prompt.indexOf("He abandoned a pomodoro");
+  assert(core >= 0 && learned >= 0, "both must appear");
+  assert(core !== learned, "they must not be the same line");
+});
+
+Deno.test("a prompt with no memories says so rather than inventing some", () => {
+  const prompt = renderSystem({ ...ctx, coreFacts: [], relevantFacts: [] });
+  assertStringIncludes(prompt, "You do not know anything about him yet");
+});
+
+// Nothing here degrades into a failed turn: the existing rule in this file is
+// that a missing battery reading is not a reason to go silent, and a database
+// that will not answer about memories is not either.
+Deno.test("a memory lookup that throws leaves the turn standing", async () => {
+  const built = await buildContext("anything", {
+    recall: () => Promise.reject(new Error("pgvector is having a day")),
+    core: () => Promise.reject(new Error("so is postgrest")),
+  });
+  assertEquals(built.coreFacts, []);
+  assertEquals(built.relevantFacts, []);
 });

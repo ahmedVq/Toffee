@@ -51,4 +51,19 @@ export type Ctx = {
   tabletBattery: number | null;
   openTaskCount: number;
   lastSaid: string | null;
+
+  /**
+   * What he knows about Ahmed regardless of what is being discussed —
+   * the seeded history, injected on every turn and every event.
+   *
+   * Kept apart from [relevantFacts] because these are claims that outlive
+   * the week they were written in: "he finds me too slow" is a fact today
+   * and a lie after the next release. Seeded facts carry one category so
+   * they stay addressable and correctable as a set.
+   */
+  coreFacts: string[];
+
+  /** Recalled semantically against whatever he just said. Empty when
+   *  nothing was said, which is every event. */
+  relevantFacts: string[];
 };

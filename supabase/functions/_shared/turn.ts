@@ -61,7 +61,10 @@ export async function turnHandler(
   const run = deps.runner ?? (runTurn as unknown as TurnRunner);
   const { dispatch, mood } = makeDispatcher();
 
-  const [ctx, history] = await Promise.all([buildContext(), recentHistory()]);
+  // What he just said is what the recall runs against, so the facts that
+  // arrive are the ones this turn is about. An event has no utterance and
+  // gets the seeded history alone.
+  const [ctx, history] = await Promise.all([buildContext(text), recentHistory()]);
 
   const result = await run({
     system: renderSystem(ctx),
