@@ -42,6 +42,7 @@ import dev.toffee.companion.reminders.toRow
 import dev.toffee.companion.reminders.upsertOnIo
 import dev.toffee.companion.voice.AndroidVoice
 import dev.toffee.companion.voice.CloudEars
+import dev.toffee.companion.voice.Conversation
 import dev.toffee.companion.voice.DeviceEars
 import dev.toffee.companion.voice.Ears
 import dev.toffee.companion.voice.Heard
@@ -71,6 +72,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var voice: AndroidVoice
     private lateinit var ears: Ears
     private val presence = Presence()
+    private val conversation = Conversation()
     private var eye: CameraEye? = null
     private var greeted = false
 
@@ -194,40 +196,71 @@ class MainActivity : AppCompatActivity() {
     private fun onTap() {
         if (brain.state.value.listening) return
         if (voice.speaking) {
+            // Interrupting ends the conversation as well as the sentence.
+            // Reopening the microphone over a deliberate interruption is the
+            // opposite of what the tap meant.
+            conversation.close()
             brain.hush()
             return
         }
 
-        lifecycleScope.launch {
-            val missing = Kiosk.grantOwnPermissions(
-                this@MainActivity,
-                Manifest.permission.RECORD_AUDIO,
-            )
-            if (missing.isNotEmpty()) {
-                val why = "The microphone is switched off and I can't switch it on."
-                Faults.record(this@MainActivity, Faults.EARS, why)
-                brain.onCannotHear(why)
-                return@launch
+        conversation.open(SystemClock.elapsedRealtime())
+        lifecycleScope.launch { converse() }
+    }
+
+    /**
+     * One conversation, for as long as it stays one.
+     *
+     * Ahmed's second complaint was "i can't have a conversation if i tap it
+     * in each reply", so after each thing Toffee says the microphone opens
+     * again by itself. Silence ends it, and ends it without comment — a
+     * companion that announces it is leaving the conversation is the first
+     * anti-goal in the design.
+     */
+    private suspend fun converse() {
+        val missing = Kiosk.grantOwnPermissions(
+            this@MainActivity,
+            Manifest.permission.RECORD_AUDIO,
+        )
+        if (missing.isNotEmpty()) {
+            val why = "The microphone is switched off and I can't switch it on."
+            Faults.record(this, Faults.EARS, why)
+            conversation.close()
+            brain.onCannotHear(why)
+            return
+        }
+
+        while (conversation.isOpen(SystemClock.elapsedRealtime())) {
+            brain.onListening()
+            val heard = ears.listen()
+
+            if (heard is Heard.Unavailable) {
+                // Said now, and kept where the maintenance screen can show
+                // it later: the caption is gone in twenty seconds.
+                Faults.record(this, Faults.EARS, heard.reason)
+                conversation.close()
+                brain.onCannotHear(heard.reason)
+                return
+            }
+            Faults.clear(this, Faults.EARS)
+
+            if (heard is Heard.Nothing) {
+                // He said nothing. Inside a conversation that is a pause, so
+                // the first one just listens again; it is the idle window
+                // that eventually ends this, in silence.
+                if (conversation.isOpen(SystemClock.elapsedRealtime())) continue
+                conversation.close()
+                brain.onHeardNothing()
+                return
             }
 
-            brain.onListening()
-            when (val heard = ears.listen()) {
-                is Heard.Words -> {
-                    Faults.clear(this@MainActivity, Faults.EARS)
-                    brain.say(heard.text)
-                }
-                is Heard.Nothing -> {
-                    Faults.clear(this@MainActivity, Faults.EARS)
-                    brain.onHeardNothing()
-                }
-                is Heard.Unavailable -> {
-                    // Said now, and kept where the maintenance screen can
-                    // show it later: the caption is gone in twenty seconds.
-                    Faults.record(this@MainActivity, Faults.EARS, heard.reason)
-                    brain.onCannotHear(heard.reason)
-                }
-            }
+            conversation.exchange(SystemClock.elapsedRealtime())
+            brain.say((heard as Heard.Words).text)
+            // After he has answered, not before: a long answer must not age
+            // out the conversation it is still delivering.
+            conversation.exchange(SystemClock.elapsedRealtime())
         }
+        conversation.close()
     }
 
     override fun onDestroy() {
