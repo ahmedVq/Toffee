@@ -144,6 +144,56 @@ const seed: Record<string, Record<string, unknown>> = {
   said_log: { said: mark, topic_key: mark },
   llm_spend: { day: "2999-12-31", calls: 7 },
 };
+/**
+ * Remove what an earlier run left behind, before seeding anything.
+ *
+ * The seed below is top-level module code. If it throws, Deno never runs a
+ * single test in this file — including the cleanup test at the bottom — so
+ * every row inserted before the throw stays in the database for ever. That
+ * is not hypothetical: `llm_spend.day` is unique, so the very first
+ * interrupted run leaves `2999-12-31` behind, the next run's seed collides
+ * with it and dies at the same line, and each of those deaths leaks a
+ * further set of rows into profile, tasks, reminders, memories,
+ * conversation, said_log and presence_events. The suite breaks itself
+ * permanently and the failure it reports ("duplicate key") names the
+ * symptom, not the cause.
+ *
+ * So the cleanup at the bottom is no longer the only one. This purges by
+ * the `rls-` mark rather than by this run's id, which makes a run repair
+ * its predecessor. It assumes no two runs of this file overlap in time;
+ * they never do, and a parallel run would be unsound here anyway.
+ */
+async function purgeLeftovers(): Promise<void> {
+  await rest(admin, "DELETE", "llm_spend?day=eq.2999-12-31");
+  await rest(admin, "DELETE", "profile?display_name=like.rls-*");
+  await rest(admin, "DELETE", "tasks?title=like.rls-*");
+  await rest(admin, "DELETE", "reminders?text=like.rls-*");
+  await rest(admin, "DELETE", "memories?fact=like.rls-*");
+  await rest(admin, "DELETE", "conversation?content=like.rls-*");
+  await rest(admin, "DELETE", "said_log?topic_key=like.rls-*");
+  await rest(admin, "DELETE", "presence_events?duration_s=in.(1717,4242)");
+
+  const res = await fetch(`${cfg.url}/auth/v1/admin/users?per_page=200`, {
+    headers: admin.headers,
+  });
+  if (!res.ok) return;
+  const { users } = await res.json() as { users?: { id: string; email?: string }[] };
+  for (const u of users ?? []) {
+    // This run's own users already exist by now — makeUser runs above this.
+    // Skipping them is what keeps the purge from deleting the identities the
+    // tests are about to sign in as.
+    if (u.email?.includes(runId)) continue;
+    if (u.email?.startsWith("rls-") && u.email.endsWith("@example.test")) {
+      await fetch(`${cfg.url}/auth/v1/admin/users/${u.id}`, {
+        method: "DELETE",
+        headers: admin.headers,
+      });
+    }
+  }
+}
+
+await purgeLeftovers();
+
 for (const [table, row] of Object.entries(seed)) {
   const r = await rest(admin, "POST", table, row);
   assertEquals(r.status, 201, `seed ${table}: ${JSON.stringify(r.body)}`);

@@ -80,10 +80,16 @@ Deno.test("recall returns [] on an empty store rather than throwing", async () =
 
 Deno.test("updateProfile writes a field readable afterwards", async () => {
   const value = `Cairo-${crypto.randomUUID().slice(0, 6)}`;
-  await updateProfile("timezone", value);
+  // The restore is in a finally because this test writes to the REAL profile
+  // row — there is only ever one — and an assertion failure used to leave the
+  // live timezone set to a nonsense value like "Cairo-d44f4e" until someone
+  // noticed. Found exactly that way.
+  try {
+    await updateProfile("timezone", value);
 
-  const { data } = await db.from("profile").select("timezone").limit(1).single();
-  assertEquals(data!.timezone, value);
-
-  await updateProfile("timezone", "Africa/Cairo");
+    const { data } = await db.from("profile").select("timezone").limit(1).single();
+    assertEquals(data!.timezone, value);
+  } finally {
+    await updateProfile("timezone", "Africa/Cairo");
+  }
 });
