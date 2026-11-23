@@ -69,8 +69,8 @@ android {
         // The tablet is a Galaxy Tab A SM-T585 on Android 8.1.0, API 27.
         minSdk = 27
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // 32-bit userspace: the device reports armeabi-v7a, armeabi and no

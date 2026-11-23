@@ -50,7 +50,7 @@ class VoiceTest {
     @Test
     fun itCanSayASentenceOutLoud() {
         val failure = AtomicReference<String?>(null)
-        val voice = AndroidVoice(context) { failure.set(it) }
+        val voice = AndroidVoice(context, onFailure = { failure.set(it) })
 
         // AndroidVoice queues anything said before onInit lands, so there is
         // nothing to wait for here beyond the speech itself.
@@ -85,7 +85,7 @@ class VoiceTest {
     @Test
     fun aWorkingEngineNeverReportsAFailure() {
         val calls = AtomicInteger(0)
-        val voice = AndroidVoice(context) { calls.incrementAndGet() }
+        val voice = AndroidVoice(context, onFailure = { calls.incrementAndGet() })
 
         repeat(5) { voice.say("line $it", Mood.NEUTRAL) }
         Thread.sleep(3_000)
@@ -101,7 +101,7 @@ class VoiceTest {
 
     @Test
     fun hushSilencesItMidSentence() {
-        val voice = AndroidVoice(context) { }
+        val voice = AndroidVoice(context, onFailure = { })
         voice.say(
             "This is a deliberately long sentence that would take several seconds to finish saying.",
             Mood.SLEEPY,
