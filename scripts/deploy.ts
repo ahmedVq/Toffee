@@ -42,6 +42,26 @@ async function listFiles(dir: URL, prefix: string): Promise<[string, string][]> 
   return out;
 }
 
+/**
+ * Every function on disk.
+ *
+ * This was a hand-written list, and `listen` was never on it. It was
+ * deployed once by hand and then sat at that version while every run of
+ * this script printed `done` — a deploy that silently covers three of four
+ * functions is worse than one that fails, because nothing looks wrong.
+ *
+ * A directory listing is the one thing that cannot drift from what exists.
+ * `_shared` is excluded by its prefix: it travels inside every bundle and
+ * is not a function of its own.
+ */
+async function allSlugs(): Promise<string[]> {
+  const out: string[] = [];
+  for await (const entry of Deno.readDir(new URL("supabase/functions/", ROOT))) {
+    if (entry.isDirectory && !entry.name.startsWith("_")) out.push(entry.name);
+  }
+  return out.sort();
+}
+
 async function deploy(slug: string): Promise<void> {
   const fnDir = new URL(`supabase/functions/${slug}/`, ROOT);
   const sharedDir = new URL("supabase/functions/_shared/", ROOT);
@@ -88,9 +108,20 @@ async function deploy(slug: string): Promise<void> {
   if (!res.ok) {
     throw new Error(`deploying ${slug} failed: HTTP ${res.status} ${text}`);
   }
-  console.log(`deployed ${slug} (${files.length} files)`);
+
+  // A 200 means the bundle was accepted, not that it is serving. The state
+  // comes back in the same response, so checking it costs nothing — and the
+  // version in the log is what makes a successful run self-evidencing
+  // rather than something to go and verify by hand afterwards.
+  const deployed = JSON.parse(text) as { status?: string; version?: number };
+  if (deployed.status !== "ACTIVE") {
+    throw new Error(
+      `deployed ${slug} but it is ${deployed.status ?? "in an unknown state"}, not ACTIVE`,
+    );
+  }
+  console.log(`deployed ${slug} v${deployed.version} (${files.length} files)`);
 }
 
-const slugs = Deno.args.length > 0 ? Deno.args : ["turn", "event", "reminders-sweep"];
+const slugs = Deno.args.length > 0 ? Deno.args : await allSlugs();
 for (const slug of slugs) await deploy(slug);
 console.log("done");
