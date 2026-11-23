@@ -54,6 +54,35 @@ await query(
    )`,
 );
 
+// Configuration the migrations need but cannot carry themselves.
+//
+// 0005 tried to hold the sweep's URL in `app.settings.sweep_url`. Supabase
+// does not let the `postgres` role set a custom parameter at all, so that
+// setting could never have existed — which is why the sweep cron failed
+// every minute for three days without once running, silently, because
+// `current_setting(..., true)` answers NULL instead of complaining.
+//
+// The URL is not a secret: it is compiled into the APK, which is public.
+// But it contains the project ref, which does not belong in a migration
+// file in a public repo. So it lives in a table, seeded here from .env,
+// where 0009 can insist on it before scheduling anything that needs it.
+await query(
+  `create table if not exists app_config (
+     key   text primary key,
+     value text not null
+   )`,
+);
+await query("alter table app_config enable row level security");
+
+const supabaseUrl = env.SUPABASE_URL ?? Deno.env.get("SUPABASE_URL");
+if (supabaseUrl) {
+  const sweepUrl = `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/reminders-sweep`;
+  await query(
+    `insert into app_config (key, value) values ('sweep_url', ${quote(sweepUrl)})
+     on conflict (key) do update set value = excluded.value`,
+  );
+}
+
 const applied = new Set(
   (await query("select filename from _migrations") as { filename: string }[])
     .map((r) => r.filename),
